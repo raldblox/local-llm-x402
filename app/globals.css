@@ -1,8 +1,8 @@
-@import "tailwindcss";
+@import 'tailwindcss';
 
 @plugin "tailwindcss-animate";
-@import "tw-animate-css";
-@import "shadcn/tailwind.css";
+@import 'tw-animate-css';
+@import 'shadcn/tailwind.css';
 
 @custom-variant dark (&:is(.dark *));
 
@@ -92,10 +92,6 @@
 }
 
 body {
-  background: radial-gradient(circle at 18% 18%, rgba(139, 92, 246, 0.18), transparent 45%),
-    radial-gradient(circle at 80% 10%, rgba(76, 29, 149, 0.3), transparent 38%),
-    radial-gradient(circle at 10% 90%, rgba(59, 7, 100, 0.35), transparent 45%),
-    var(--background);
   font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
   min-height: 100vh;
 }
@@ -146,11 +142,4 @@ a {
   body {
     @apply bg-background text-foreground;
   }
-}
-
-body {
-  background: radial-gradient(circle at 18% 18%, rgba(139, 92, 246, 0.18), transparent 45%),
-    radial-gradient(circle at 80% 10%, rgba(76, 29, 149, 0.3), transparent 38%),
-    radial-gradient(circle at 10% 90%, rgba(59, 7, 100, 0.35), transparent 45%),
-    var(--background);
 }

@@ -14,7 +14,7 @@ function CodeBlock({ children, className, ...props }: CodeBlockProps) {
     <div
       className={cn(
         "not-prose flex w-full flex-col overflow-clip border",
-        "border-border bg-card text-card-foreground rounded-xl",
+        "border-border/70 bg-[#0f1117] text-[#e6e9ef] rounded-xl",
         className
       )}
       {...props}
@@ -34,7 +34,7 @@ export type CodeBlockCodeProps = {
 function CodeBlockCode({
   code,
   language = "tsx",
-  theme = "github-light",
+  theme = "github-dark",
   className,
   ...props
 }: CodeBlockCodeProps) {
@@ -54,7 +54,7 @@ function CodeBlockCode({
   }, [code, language, theme])
 
   const classNames = cn(
-    "w-full overflow-x-auto text-[13px] [&>pre]:px-4 [&>pre]:py-4",
+    "w-full overflow-x-auto text-[13px] [&>pre]:px-4 [&>pre]:py-4 [&_pre]:bg-transparent",
     className
   )
 
