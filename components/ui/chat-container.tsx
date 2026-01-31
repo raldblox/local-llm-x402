@@ -30,7 +30,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { ArrowUp, ChevronDown, ChevronUp, Coins, Gauge, Hash, Square } from 'lucide-react';
+import { ArrowUp, ChevronDown, ChevronUp, Coins, Gauge, Hash, Square, X } from 'lucide-react';
 import {
   DEFAULT_GUEST_BALANCE_SEED,
   DEFAULT_RATE_USDC_PER_1K,
@@ -542,7 +542,7 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
     identityRole === 'host'
       ? hostOnline
         ? modelLabel
-        : 'Connect model'
+        : 'Connect LM Studio'
       : hostState?.modelId
         ? modelLabel
         : 'No model connected';
@@ -556,12 +556,15 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
               variant={hostOnline ? 'secondary' : 'default'}
               onClick={() => setModalOpen(true)}
               disabled={!canOpenModal}
+              className={hostOnline ? 'text-emerald-400' : undefined}
             >
               <span className="flex items-center gap-2">
                 {identityRole === 'host' ? (
                   <span
                     className={`h-2 w-2 rounded-full ${
-                      hostOnline ? 'bg-emerald-400' : 'bg-muted-foreground/50'
+                      hostOnline
+                        ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.7)]'
+                        : 'bg-muted-foreground/50'
                     }`}
                   />
                 ) : null}
@@ -571,10 +574,20 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
           </div>
           <div className="flex items-center gap-2">
             <div className="flex items-center gap-1 rounded-xl border border-border/60 p-1 text-xs">
-              <Button asChild size="sm" variant={identityRole === 'host' ? 'secondary' : 'ghost'}>
+              <Button
+                asChild
+                size="sm"
+                variant={identityRole === 'host' ? 'secondary' : 'ghost'}
+                className={identityRole === 'host' ? 'text-purple-200' : undefined}
+              >
                 <Link href={hostRoute}>Host</Link>
               </Button>
-              <Button asChild size="sm" variant={identityRole === 'guest' ? 'secondary' : 'ghost'}>
+              <Button
+                asChild
+                size="sm"
+                variant={identityRole === 'guest' ? 'secondary' : 'ghost'}
+                className={identityRole === 'guest' ? 'text-purple-200' : undefined}
+              >
                 <Link href={guestRoute}>Guest</Link>
               </Button>
             </div>
@@ -585,7 +598,7 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
         </div>
       </header>
 
-      <main className="mx-auto z-0 flex w-full max-w-5xl flex-1 flex-col">
+      <main className="mx-auto z-0 flex w-full pt-4 max-w-5xl flex-1 flex-col">
         <div className="flex flex-1 flex-col gap-4">
           {bannerVisible ? (
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-background/80 px-4 py-3 text-sm text-muted-foreground">
@@ -814,26 +827,32 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold">Connect LM Studio</h2>
               <Button variant="ghost" size="sm" onClick={() => setModalOpen(false)}>
-                Close
+                <X className="size-5 text-red-600" />
               </Button>
             </div>
 
             <div className="mt-4 space-y-4 text-sm">
               <div className="space-y-2">
-                <label className="text-muted-foreground">LM Studio URL</label>
+                <label className="text-muted-foreground">LM Studio target URL</label>
                 <Input
                   value={lmStudioUrl}
                   onChange={(event) => setLmStudioUrl(event.target.value)}
                 />
                 <p className="text-xs text-muted-foreground">
-                  The browser will call the local proxy on port 4312 and forward to this target URL.
+                  Requests go through your local proxy at 127.0.0.1:4312 and forward to this URL.
                 </p>
               </div>
               <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-                Allow local network access
-                <div className="text-[11px] text-muted-foreground/80">
-                  The browser must reach the local proxy at 127.0.0.1:4312 to connect to LM Studio.
-                </div>
+                Status:{' '}
+                <span
+                  className={
+                    hostOnline && hostState?.hostAddr === currentAddr
+                      ? 'text-emerald-400'
+                      : 'text-muted-foreground'
+                  }
+                >
+                  {hostOnline && hostState?.hostAddr === currentAddr ? 'Online' : 'Offline'}
+                </span>
               </div>
               <div className="space-y-2">
                 <label className="text-muted-foreground">Bearer token (optional)</label>
@@ -854,7 +873,7 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
                     <SelectContent>
                       {modelOptions.length === 0 ? (
                         <SelectItem value="none" disabled>
-                          Detect models first
+                          Detect models to continue
                         </SelectItem>
                       ) : (
                         modelOptions.map((model) => (
@@ -866,7 +885,7 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
                     </SelectContent>
                   </Select>
                   <Button variant="secondary" onClick={handleDetectModels} disabled={modelLoading}>
-                    {modelLoading ? 'Detecting...' : 'Connect LM Studio'}
+                    {modelLoading ? 'Checking...' : 'Detect models'}
                   </Button>
                 </div>
               </div>
@@ -888,7 +907,7 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
                 </Button>
               ) : null}
               <Button onClick={handleClaimHost} disabled={claimLoading}>
-                {claimLoading ? 'Connecting...' : 'Go Online'}
+                {claimLoading ? 'Connecting...' : hostOnline ? 'Update session' : 'Go Online'}
               </Button>
             </div>
           </div>

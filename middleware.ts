@@ -35,7 +35,7 @@ export async function middleware(request: NextRequest) {
     try {
       const cloned = request.clone()
       const body = (await cloned.json().catch(() => null)) as
-        | { rateUsdcPer1k?: number; maxTokens?: number }
+        | { rateUsdcPer1k?: number; maxTokens?: number; tokenUsage?: number }
         | null
       const rate =
         typeof body?.rateUsdcPer1k === 'number' && Number.isFinite(body.rateUsdcPer1k)
