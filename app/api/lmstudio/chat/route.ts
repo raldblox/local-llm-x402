@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-import { LM_STUDIO_DEFAULT_BASE_URL } from '@/config/constants'
+import { LM_STUDIO_DEFAULT_TARGET_URL } from '@/config/constants'
 
 const normalizeBaseUrl = (input?: string) => {
-  const trimmed = (input ?? LM_STUDIO_DEFAULT_BASE_URL).trim()
+  const trimmed = (input ?? LM_STUDIO_DEFAULT_TARGET_URL).trim()
 
   if (!trimmed) {
-    return LM_STUDIO_DEFAULT_BASE_URL
+    return LM_STUDIO_DEFAULT_TARGET_URL
   }
 
   return trimmed.replace(/\/+$/, '')
@@ -92,12 +92,15 @@ export async function POST(request: NextRequest) {
       headers.Authorization = `Bearer ${token}`
     }
 
-    const lmResponse = await fetch(`${normalized}/api/v1/chat`, {
+    const lmResponse = await fetch(`${normalized}/v1/chat/completions`, {
       method: 'POST',
       headers,
       body: JSON.stringify({
         model: modelId,
-        input: prompt || messages?.[messages.length - 1]?.content || '',
+        messages:
+          messages && messages.length > 0
+            ? messages
+            : [{ role: 'user', content: prompt }],
         temperature,
       }),
     })

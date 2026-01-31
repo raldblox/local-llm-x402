@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-import { LM_STUDIO_DEFAULT_BASE_URL } from '@/config/constants'
+import { LM_STUDIO_DEFAULT_TARGET_URL } from '@/config/constants'
 
 const normalizeBaseUrl = (input?: string) => {
-  const trimmed = (input ?? LM_STUDIO_DEFAULT_BASE_URL).trim()
+  const trimmed = (input ?? LM_STUDIO_DEFAULT_TARGET_URL).trim()
 
   if (!trimmed) {
-    return LM_STUDIO_DEFAULT_BASE_URL
+    return LM_STUDIO_DEFAULT_TARGET_URL
   }
 
   return trimmed.replace(/\/+$/, '')
@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
   const normalized = normalizeBaseUrl(baseUrl)
 
   try {
-    const endpoints = [`${normalized}/api/v1/models`, `${normalized}/v1/models`]
+    const endpoints = [`${normalized}/v1/models`]
     let lastStatus = 502
     let lastError = 'Failed to reach LM Studio'
 

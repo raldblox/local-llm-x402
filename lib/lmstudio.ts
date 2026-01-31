@@ -1,4 +1,9 @@
-import { LM_STUDIO_DEFAULT_BASE_URL } from '@/config/constants'
+'use client'
+
+import {
+  LM_STUDIO_DEFAULT_TARGET_URL,
+  LM_STUDIO_PROXY_BASE_URL,
+} from '@/config/constants'
 
 export interface LMStudioModel {
   id: string
@@ -32,10 +37,10 @@ interface LMStudioProxyOptions {
 }
 
 const normalizeBaseUrl = (input?: string) => {
-  const trimmed = (input ?? LM_STUDIO_DEFAULT_BASE_URL).trim()
+  const trimmed = (input ?? LM_STUDIO_PROXY_BASE_URL).trim()
 
   if (!trimmed) {
-    return LM_STUDIO_DEFAULT_BASE_URL
+    return LM_STUDIO_PROXY_BASE_URL
   }
 
   return trimmed.replace(/\/+$/, '')
@@ -60,7 +65,7 @@ const withAgentError = (baseUrl: string, message: string) => {
 const buildModelsEndpoint = (options?: LMStudioProxyOptions) => {
   const normalized = normalizeBaseUrl(options?.baseUrl)
   const target = options?.targetUrl?.trim()
-  const url = new URL(`${normalized}/api/v1/models`)
+  const url = new URL(`${normalized}/v1/models`)
 
   if (target) {
     url.searchParams.set('target', target)
@@ -127,7 +132,7 @@ export const createLMStudioChatCompletion = async ({
   systemPrompt,
 }: LMStudioChatOptions): Promise<LMStudioChatResult> => {
   const normalized = normalizeBaseUrl(baseUrl)
-  const target = targetUrl?.trim()
+  const target = targetUrl?.trim() || LM_STUDIO_DEFAULT_TARGET_URL
   const trimmedSystemPrompt = systemPrompt?.trim()
 
   try {
@@ -138,15 +143,19 @@ export const createLMStudioChatCompletion = async ({
       headers.Authorization = `Bearer ${token}`
     }
 
-    const response = await fetch(`${normalized}/api/v1/chat`, {
+    const messages = [
+      ...(trimmedSystemPrompt ? [{ role: 'system', content: trimmedSystemPrompt }] : []),
+      { role: 'user', content: prompt },
+    ]
+
+    const response = await fetch(`${normalized}/v1/chat/completions`, {
       method: 'POST',
       headers,
       body: JSON.stringify({
         model: modelId,
-        input: prompt,
+        messages,
         temperature,
         ...(target ? { target } : {}),
-        ...(trimmedSystemPrompt ? { system: trimmedSystemPrompt } : {}),
       }),
       signal,
     })

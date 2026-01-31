@@ -34,9 +34,10 @@ import { ArrowUp, ChevronDown, ChevronUp, Coins, Gauge, Hash, Square } from 'luc
 import {
   DEFAULT_GUEST_BALANCE_SEED,
   DEFAULT_RATE_USDC_PER_1K,
-  LM_STUDIO_DEFAULT_BASE_URL,
+  LM_STUDIO_DEFAULT_TARGET_URL,
   TOKEN_PRICE_UNIT,
 } from '@/config/constants';
+import { fetchLMStudioModels } from '@/lib/lmstudio';
 import type { Message } from '@/components/ui/chat-context';
 import { useChatStore } from '@/components/ui/chat-context';
 import {
@@ -80,7 +81,7 @@ const splitThoughtSteps = (input?: string) => {
   return lines.map((line) => line.replace(/^(\d+[\).\s]|[-*]\s+)/, '').trim());
 };
 
-const DEFAULT_LM_URL = LM_STUDIO_DEFAULT_BASE_URL;
+const DEFAULT_LM_URL = LM_STUDIO_DEFAULT_TARGET_URL;
 const DEFAULT_RATE = DEFAULT_RATE_USDC_PER_1K;
 const DEFAULT_GUEST_SEED = DEFAULT_GUEST_BALANCE_SEED;
 const USDC_METADATA = '0x69091fbab5f7d635ee7ac5098cf0c1efbe31d68fec0f2cd565e8d168daf52832';
@@ -175,6 +176,7 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
   const [modelLoading, setModelLoading] = useState(false);
   const [claimLoading, setClaimLoading] = useState(false);
   const [shareLink, setShareLink] = useState('');
+  const [networkConsent, setNetworkConsent] = useState(false);
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [fetchWithPayment, setFetchWithPayment] = useState<
     ((input: RequestInfo, init?: RequestInit) => Promise<Response>) | null
@@ -472,94 +474,37 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
       setModalError('Enter a valid LM Studio URL.');
       return;
     }
+    if (!networkConsent) {
+      setModalError('Please approve local network access first.');
+      return;
+    }
 
     setModelLoading(true);
     setModalError(null);
     let timeout: ReturnType<typeof setTimeout> | null = null;
 
     try {
-      const controller = new AbortController();
-      timeout = setTimeout(() => controller.abort(), 7000);
       const token = lmStudioToken.trim();
-      const isLocalUi =
-        typeof window !== 'undefined' &&
-        (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+      const models = await Promise.race([
+        fetchLMStudioModels({ targetUrl: trimmedUrl, token }),
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(
+            () => reject(new Error('LM Studio timed out. Check the URL and server status.')),
+            7000,
+          );
+        }),
+      ]);
 
-      const directFetch = async () => {
-        const root = trimmedUrl
-          .replace(/\/+$/, '')
-          .replace(/\/api\/v1$/i, '')
-          .replace(/\/v1$/i, '');
-        const candidates = [`${root}/api/v1/models`, `${root}/v1/models`];
-        let lastError = 'Failed to reach LM Studio';
-
-        for (const url of candidates) {
-          try {
-            const response = await fetch(url, {
-              headers: {
-                Accept: 'application/json',
-                ...(token ? { Authorization: `Bearer ${token}` } : {}),
-              },
-              signal: controller.signal,
-            });
-            if (!response.ok) {
-              lastError = `LM Studio responded with ${response.status}`;
-              continue;
-            }
-            const data = (await response.json()) as { models?: unknown[]; data?: unknown[] };
-            return { ok: true, models: data?.models ?? data?.data ?? [] };
-          } catch (error: unknown) {
-            lastError = error instanceof Error ? error.message : lastError;
-          }
-        }
-
-        return { ok: false, error: lastError };
-      };
-
-      if (!isLocalUi) {
-        throw new Error('Run the UI on localhost to connect to LM Studio directly.');
+      if (!models || models.length === 0) {
+        throw new Error('No models found. Make sure a model is downloaded.');
       }
 
-      const response = await directFetch();
-
-      if (!response?.ok) {
-        const errMsg =
-          typeof response?.error === 'string' ? response.error : 'Failed to detect models';
-        throw new Error(errMsg);
-      }
-
-      const models = Array.isArray(response.models) ? response.models : [];
-      const options = models
-        .map((model: unknown) => {
-          if (!model || typeof model !== 'object') return null;
-          const record = model as Record<string, unknown>;
-          const id =
-            typeof record.id === 'string'
-              ? record.id
-              : typeof record.key === 'string'
-                ? record.key
-                : typeof record.name === 'string'
-                  ? record.name
-                  : null;
-          if (!id) return null;
-          const label = typeof record.display_name === 'string' ? record.display_name : id;
-          return { id, label };
-        })
-        .filter(Boolean) as ModelOption[];
-
+      const options = models.map((model) => ({ id: model.id, label: model.id }));
       setModelOptions(options);
-      if (options.length > 0) {
-        setModelId(options[0].id);
-      } else {
-        setModalError('No models found. Make sure a model is downloaded.');
-      }
+      setModelId((prev) => prev || options[0]?.id || '');
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Failed to detect models';
-      setModalError(
-        error instanceof DOMException && error.name === 'AbortError'
-          ? 'LM Studio timed out. Check the URL and server status.'
-          : message,
-      );
+      setModalError(message);
     } finally {
       if (timeout) clearTimeout(timeout);
       setModelLoading(false);
@@ -910,6 +855,25 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
                   value={lmStudioUrl}
                   onChange={(event) => setLmStudioUrl(event.target.value)}
                 />
+                <p className="text-xs text-muted-foreground">
+                  The browser will call the local proxy on port 4312 and forward to this target URL.
+                </p>
+              </div>
+              <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                <div>
+                  Allow local network access
+                  <div className="text-[11px] text-muted-foreground/80">
+                    Required to reach LM Studio or your agent URL.
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={networkConsent ? 'secondary' : 'outline'}
+                  onClick={() => setNetworkConsent((prev) => !prev)}
+                >
+                  {networkConsent ? 'Approved' : 'Approve'}
+                </Button>
               </div>
               <div className="space-y-2">
                 <label className="text-muted-foreground">Bearer token (optional)</label>
