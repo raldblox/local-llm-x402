@@ -1,10 +1,17 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Account, Ed25519PrivateKey } from '@aptos-labs/ts-sdk'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Input } from '@/components/ui/input'
+import { Message, MessageActions, MessageAvatar, MessageContent } from '@/components/ui/message'
+import {
+  PromptInput,
+  PromptInputActions,
+  PromptInputTextarea,
+} from '@/components/ui/prompt-input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
@@ -52,6 +59,11 @@ type BalanceState = {
   status: 'idle' | 'loading'
 }
 
+type ParsedMessage = {
+  content: string
+  reasoning?: string
+}
+
 const DEFAULT_LM_URL = 'http://localhost:1234'
 const DEFAULT_RATE = 0.75
 const DEFAULT_GUEST_SEED = 100_000_000
@@ -62,6 +74,22 @@ const mergeMessages = (existing: Message[], incoming: Message[]) => {
   const map = new Map(existing.map((msg) => [msg.id, msg]))
   incoming.forEach((msg) => map.set(msg.id, msg))
   return Array.from(map.values()).sort((a, b) => a.createdAt - b.createdAt)
+}
+
+const parseReasoning = (input: string): ParsedMessage => {
+  const thinkMatch = input.match(/<think>([\s\S]*?)<\/think>/i)
+  const reasoningMatch = input.match(/<reasoning>([\s\S]*?)<\/reasoning>/i)
+  const match = thinkMatch ?? reasoningMatch
+  if (!match) {
+    return { content: input }
+  }
+
+  const reasoning = match[1]?.trim()
+  const content = input.replace(match[0], '').trim()
+  return {
+    content: content.length > 0 ? content : input,
+    reasoning,
+  }
 }
 
 const useInterval = (callback: () => void, delay: number | null) => {
@@ -154,7 +182,7 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
     }
   }, [modalOpen, hostState])
 
-  const fetchRoomState = async () => {
+  const fetchRoomState = useCallback(async () => {
     try {
       const response = await fetch(`/api/room/state?roomId=${roomId}`)
       const data = await response.json()
@@ -162,9 +190,9 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
     } catch {
       // ignore
     }
-  }
+  }, [roomId])
 
-  const fetchMessages = async () => {
+  const fetchMessages = useCallback(async () => {
     try {
       const response = await fetch(`/api/room/messages?roomId=${roomId}&after=${lastSeen}`)
       const data = await response.json()
@@ -176,9 +204,9 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
     } catch {
       // ignore
     }
-  }
+  }, [roomId, lastSeen])
 
-  const fetchBalance = async () => {
+  const fetchBalance = useCallback(async () => {
     if (!currentAddr) return
     setBalance((prev) => ({ ...prev, status: 'loading' }))
     try {
@@ -197,17 +225,17 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
     } catch {
       setBalance((prev) => ({ ...prev, status: 'idle' }))
     }
-  }
+  }, [currentAddr, identityRole, identities.guestAddr, roomId])
 
   useEffect(() => {
     if (mode === 'demo' && identityRole === 'host') return
     fetchRoomState()
-  }, [roomId, mode, identityRole])
+  }, [fetchRoomState, mode, identityRole])
 
   useEffect(() => {
     if (mode === 'demo' && identityRole === 'host') return
     fetchBalance()
-  }, [roomId, currentAddr, identityRole, mode])
+  }, [fetchBalance, mode, identityRole])
 
   useInterval(fetchRoomState, mode === 'demo' && identityRole === 'host' ? null : 2500)
   useInterval(fetchMessages, mode === 'demo' && identityRole === 'host' ? null : hostOnline || hasInteracted ? 1200 : null)
@@ -329,10 +357,10 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
               lastError = `LM Studio responded with ${response.status}`
               continue
             }
-            const data = await response.json()
+            const data = (await response.json()) as { models?: unknown[]; data?: unknown[] }
             return { ok: true, models: data?.models ?? data?.data ?? [] }
-          } catch (error: any) {
-            lastError = error?.message ?? lastError
+          } catch (error: unknown) {
+            lastError = error instanceof Error ? error.message : lastError
           }
         }
 
@@ -346,24 +374,26 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
       const response = await directFetch()
 
       if (!response?.ok) {
-        const details = Array.isArray((response as any)?.attempted)
-          ? ` Tried: ${(response as any).attempted.join(', ')}`
-          : ''
-        throw new Error(`${(response as any)?.error ?? 'Failed to detect models'}${details}`)
+        const errMsg =
+          typeof response?.error === 'string' ? response.error : 'Failed to detect models'
+        throw new Error(errMsg)
       }
 
-      const options = ((response as any).models ?? [])
-        .map((model: any) => {
+      const models = Array.isArray(response.models) ? response.models : []
+      const options = models
+        .map((model: unknown) => {
+          if (!model || typeof model !== 'object') return null
+          const record = model as Record<string, unknown>
           const id =
-            typeof model?.id === 'string'
-              ? model.id
-              : typeof model?.key === 'string'
-                ? model.key
-                : typeof model?.name === 'string'
-                  ? model.name
+            typeof record.id === 'string'
+              ? record.id
+              : typeof record.key === 'string'
+                ? record.key
+                : typeof record.name === 'string'
+                  ? record.name
                   : null
           if (!id) return null
-          const label = typeof model?.display_name === 'string' ? model.display_name : id
+          const label = typeof record.display_name === 'string' ? record.display_name : id
           return { id, label }
         })
         .filter(Boolean) as ModelOption[]
@@ -374,11 +404,12 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
       } else {
         setModalError('No models found. Make sure a model is downloaded.')
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Failed to detect models'
       setModalError(
-        error?.name === 'AbortError'
+        error instanceof DOMException && error.name === 'AbortError'
           ? 'LM Studio timed out. Check the URL and server status.'
-          : error?.message ?? 'Failed to detect models',
+          : message,
       )
     } finally {
       if (timeout) clearTimeout(timeout)
@@ -440,8 +471,9 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
       }
       setHostState(data?.host ?? null)
       setModalOpen(false)
-    } catch (error: any) {
-      setModalError(error?.message ?? 'Failed to go online')
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Failed to go online'
+      setModalError(message)
     } finally {
       setClaimLoading(false)
     }
@@ -529,45 +561,71 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
                 </div>
               ) : null}
               {messages.map((message) => {
+                if (message.kind === 'system') {
+                  return (
+                    <div key={message.id} className="flex justify-center">
+                      <div className="rounded-lg border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+                        {message.text}
+                      </div>
+                    </div>
+                  )
+                }
+
                 const isCurrent = message.from === currentAddr
-                const bubbleStyle =
-                  message.kind === 'system'
-                    ? 'border border-border bg-background text-muted-foreground'
-                    : isCurrent
-                      ? 'bg-primary text-primary-foreground'
-                      : 'bg-muted text-foreground'
+                const parsed =
+                  message.kind === 'response' ? parseReasoning(message.text) : { content: message.text }
 
                 return (
-                  <div
-                    key={message.id}
-                    className={`flex ${message.kind === 'system' ? 'justify-center' : isCurrent ? 'justify-end' : 'justify-start'}`}
-                  >
-                    <div className={`max-w-[75%] rounded-2xl px-4 py-3 ${bubbleStyle}`}>
-                      <p className="whitespace-pre-wrap">{message.text}</p>
+                  <Message key={message.id} className={isCurrent ? 'justify-end' : 'justify-start'}>
+                    {!isCurrent ? (
+                      <MessageAvatar
+                        src=""
+                        alt="assistant"
+                        fallback="AI"
+                        className="bg-muted text-muted-foreground"
+                      />
+                    ) : null}
+                    <div className="space-y-2">
+                      <MessageContent
+                        markdown={message.kind === 'response'}
+                        className={isCurrent ? 'bg-primary text-primary-foreground' : undefined}
+                      >
+                        {parsed.content}
+                      </MessageContent>
+                      {parsed.reasoning ? (
+                        <MessageActions>
+                          <Collapsible>
+                            <CollapsibleTrigger className="text-xs text-muted-foreground underline">
+                              Show reasoning
+                            </CollapsibleTrigger>
+                            <CollapsibleContent className="mt-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                              {parsed.reasoning}
+                            </CollapsibleContent>
+                          </Collapsible>
+                        </MessageActions>
+                      ) : null}
                     </div>
-                  </div>
+                  </Message>
                 )
               })}
             </div>
           </ScrollArea>
 
-          <div className="sticky bottom-0 flex items-center gap-2 rounded-xl border border-border bg-background p-2">
-            <Input
-              placeholder={hostOnline ? 'Send a message' : 'Host is offline'}
-              value={chatInput}
-              onChange={(event) => setChatInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  event.preventDefault()
-                  handleSend()
-                }
-              }}
-              disabled={!hostOnline || sending}
-            />
-            <Button onClick={handleSend} disabled={!hostOnline || sending}>
-              Send
-            </Button>
-          </div>
+          <PromptInput
+            value={chatInput}
+            onValueChange={setChatInput}
+            onSubmit={handleSend}
+            isLoading={sending}
+            disabled={!hostOnline}
+            className="rounded-2xl"
+          >
+            <PromptInputTextarea placeholder={hostOnline ? 'Send a message' : 'Host is offline'} />
+            <PromptInputActions className="justify-end">
+              <Button size="sm" onClick={handleSend} disabled={!hostOnline || sending}>
+                Send
+              </Button>
+            </PromptInputActions>
+          </PromptInput>
         </div>
 
         {mode === 'demo' ? (
