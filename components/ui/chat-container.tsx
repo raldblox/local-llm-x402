@@ -1,13 +1,26 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { Account, Aptos, AptosConfig, Ed25519PrivateKey, Network } from '@aptos-labs/ts-sdk';
+import {
+  Account,
+  Aptos,
+  AptosConfig,
+  Ed25519PrivateKey,
+  Network,
+  PrivateKey,
+  PrivateKeyVariants,
+} from '@aptos-labs/ts-sdk';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Input } from '@/components/ui/input';
-import { Message, MessageActions, MessageAvatar, MessageContent } from '@/components/ui/message';
+import {
+  Message as MessageBubble,
+  MessageActions,
+  MessageAvatar,
+  MessageContent,
+} from '@/components/ui/message';
 import { PromptInput, PromptInputActions, PromptInputTextarea } from '@/components/ui/prompt-input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import {
@@ -22,38 +35,19 @@ import {
   DEFAULT_GUEST_BALANCE_SEED,
   DEFAULT_RATE_USDC_PER_1K,
   LM_STUDIO_DEFAULT_BASE_URL,
+  TOKEN_PRICE_UNIT,
 } from '@/config/constants';
+import type { Message } from '@/components/ui/chat-context';
+import { useChatStore } from '@/components/ui/chat-context';
+import {
+  x402Client,
+  wrapFetchWithPayment,
+  decodePaymentResponseHeader,
+} from '@rvk_rishikesh/fetch';
+import { registerExactAptosScheme } from '@rvk_rishikesh/aptos/exact/client';
 
 type LandingMode = 'root' | 'demo';
 type DemoRole = 'host' | 'guest';
-
-type Message = {
-  id: string;
-  roomId: string;
-  kind: 'prompt' | 'response' | 'system';
-  from: string;
-  text: string;
-  createdAt: number;
-  promptId: string | null;
-  meta?: {
-    txHash?: string;
-    amountMicroUsdc?: string;
-    tokenUsage?: number;
-    tokensPerSecond?: number;
-    reasoningTokens?: number;
-  };
-};
-
-type HostState = {
-  hostAddr: string;
-  recvAddr: string;
-  rateUsdcPer1k: number;
-  lmStudioUrl: string;
-  lmStudioToken?: string;
-  modelId: string;
-  modelConnected: boolean;
-  lastSeen: number;
-};
 
 type ModelOption = {
   id: string;
@@ -63,11 +57,6 @@ type ModelOption = {
 type Identities = {
   hostAddr: string | null;
   guestAddr: string | null;
-};
-
-type BalanceState = {
-  microUsdc: number;
-  status: 'idle' | 'loading';
 };
 
 type ParsedMessage = {
@@ -97,27 +86,10 @@ const DEFAULT_GUEST_SEED = DEFAULT_GUEST_BALANCE_SEED;
 const USDC_METADATA = '0x69091fbab5f7d635ee7ac5098cf0c1efbe31d68fec0f2cd565e8d168daf52832';
 const USDC_DECIMALS = 6;
 
-const formatUsdc = (micro: number) => `${(micro / 1_000_000).toFixed(2)} USDC`;
-
 const mergeMessages = (existing: Message[], incoming: Message[]) => {
   const map = new Map(existing.map((msg) => [msg.id, msg]));
   incoming.forEach((msg) => map.set(msg.id, msg));
   return Array.from(map.values()).sort((a, b) => a.createdAt - b.createdAt);
-};
-
-const extractLmStudioStats = (data: Record<string, unknown>) => {
-  const stats = (data?.stats ?? data?.usage ?? data?.token_usage) as Record<string, unknown> | null;
-  if (!stats) return null;
-  const toNumber = (value: unknown) => (typeof value === 'number' ? value : null);
-  const tokenUsage =
-    toNumber(stats.total_output_tokens) ??
-    toNumber(stats.output_tokens) ??
-    toNumber(stats.completion_tokens);
-  const tokensPerSecond =
-    toNumber(stats.tokens_per_second) ?? toNumber(stats.tok_per_sec) ?? toNumber(stats.tps);
-  const reasoningTokens = toNumber(stats.reasoning_output_tokens);
-  if (tokenUsage === null && tokensPerSecond === null) return null;
-  return { tokenUsage, tokensPerSecond, reasoningTokens };
 };
 
 const parseReasoning = (input: string): ParsedMessage => {
@@ -160,24 +132,12 @@ const parseReasoning = (input: string): ParsedMessage => {
   };
 };
 
-const useInterval = (callback: () => void, delay: number | null) => {
-  const savedCallback = useRef(callback);
-  useEffect(() => {
-    savedCallback.current = callback;
-  }, [callback]);
-
-  useEffect(() => {
-    if (delay === null) return;
-    const id = setInterval(() => savedCallback.current(), delay);
-    return () => clearInterval(id);
-  }, [delay]);
-};
-
 const deriveAddress = (privateKey?: string | null, fallback?: string | null) => {
   const normalized = privateKey?.trim();
   if (normalized) {
     try {
-      const hex = normalized.startsWith('0x') ? normalized.slice(2) : normalized;
+      const formatted = PrivateKey.formatPrivateKey(normalized, PrivateKeyVariants.Ed25519);
+      const hex = formatted.startsWith('0x') ? formatted.slice(2) : formatted;
       const key = new Ed25519PrivateKey(hex);
       return Account.fromPrivateKey({ privateKey: key }).accountAddress.toString();
     } catch {
@@ -189,6 +149,8 @@ const deriveAddress = (privateKey?: string | null, fallback?: string | null) => 
 
 export default function ChatContainer({ mode, role }: { mode: LandingMode; role?: DemoRole }) {
   const roomId = mode === 'demo' ? 'demo' : 'global';
+  const { hostState, setHostState, messages, setMessages, balances, setBalance, addBalance } =
+    useChatStore();
   const [identities] = useState<Identities>({
     hostAddr: deriveAddress(
       process.env.NEXT_PUBLIC_DEMO_HOST_PRIVATE_KEY,
@@ -199,13 +161,8 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
       process.env.NEXT_PUBLIC_DEMO_GUEST_ADDRESS,
     ),
   });
-  const [hostState, setHostState] = useState<HostState | null>(null);
-  const [hostOnlineLocal, setHostOnlineLocal] = useState(false);
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [lastSeen, setLastSeen] = useState(0);
   const [chatInput, setChatInput] = useState('');
   const [sending, setSending] = useState(false);
-  const [balance, setBalance] = useState<BalanceState>({ microUsdc: 0, status: 'idle' });
   const [chainBalance, setChainBalance] = useState<number | null>(null);
   const [chainBalanceLoading, setChainBalanceLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
@@ -218,19 +175,19 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
   const [modelLoading, setModelLoading] = useState(false);
   const [claimLoading, setClaimLoading] = useState(false);
   const [shareLink, setShareLink] = useState('');
-  const [hasInteracted, setHasInteracted] = useState(false);
-
+  const [paymentError, setPaymentError] = useState<string | null>(null);
+  const [fetchWithPayment, setFetchWithPayment] = useState<
+    ((input: RequestInfo, init?: RequestInit) => Promise<Response>) | null
+  >(null);
   const identityRole = role ?? (mode === 'demo' ? 'host' : 'guest');
-  const hostOnline =
-    mode === 'demo' && identityRole === 'host'
-      ? hostOnlineLocal
-      : Boolean(hostState?.modelConnected);
+  const hostOnline = Boolean(hostState?.modelConnected);
   const currentAddr =
     identityRole === 'host' ? (identities.hostAddr ?? identities.guestAddr) : identities.guestAddr;
 
   const showGuestLink = mode === 'demo' && identityRole === 'host';
   const canBecomeHost = !hostOnline && identityRole === 'guest';
   const hostRoute = mode === 'demo' ? '/demo/host' : '/host';
+  const guestRoute = mode === 'demo' ? '/demo/guest' : '/guest';
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -239,6 +196,28 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
     url.pathname = '/demo/guest';
     setShareLink(url.toString());
   }, [mode]);
+
+  useEffect(() => {
+    if (identityRole !== 'guest') return;
+    const privateKeyRaw = process.env.NEXT_PUBLIC_DEMO_GUEST_PRIVATE_KEY;
+    if (!privateKeyRaw) {
+      setPaymentError('Missing guest private key for x402.');
+      return;
+    }
+    try {
+      const formatted = PrivateKey.formatPrivateKey(privateKeyRaw, PrivateKeyVariants.Ed25519);
+      const hex = formatted.startsWith('0x') ? formatted.slice(2) : formatted;
+      const privateKey = new Ed25519PrivateKey(hex);
+      const account = Account.fromPrivateKey({ privateKey });
+      const client = new x402Client();
+      registerExactAptosScheme(client, { signer: account });
+      const wrapped = wrapFetchWithPayment(fetch, client);
+      setFetchWithPayment(() => wrapped);
+      setPaymentError(null);
+    } catch (error: unknown) {
+      setPaymentError(error instanceof Error ? error.message : 'Failed to initialize payment.');
+    }
+  }, [identityRole]);
 
   useEffect(() => {
     if (!modalOpen || !hostState) return;
@@ -254,49 +233,6 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
       });
     }
   }, [modalOpen, hostState]);
-
-  const fetchRoomState = useCallback(async () => {
-    try {
-      const response = await fetch(`/api/room/state?roomId=${roomId}`);
-      const data = await response.json();
-      setHostState(data?.host ?? null);
-    } catch {
-      // ignore
-    }
-  }, [roomId]);
-
-  const fetchMessages = useCallback(async () => {
-    try {
-      const response = await fetch(`/api/room/messages?roomId=${roomId}&after=${lastSeen}`);
-      const data = await response.json();
-      const incoming = (data?.messages ?? []) as Message[];
-      if (incoming.length > 0) {
-        setMessages((prev) => mergeMessages(prev, incoming));
-        setLastSeen((prev) => Math.max(prev, incoming[incoming.length - 1].createdAt));
-      }
-    } catch {
-      // ignore
-    }
-  }, [roomId, lastSeen]);
-
-  const fetchBalance = useCallback(async () => {
-    if (!currentAddr) return;
-    setBalance((prev) => ({ ...prev, status: 'loading' }));
-    try {
-      const seed =
-        identityRole === 'guest' && currentAddr === identities.guestAddr ? DEFAULT_GUEST_SEED : 0;
-      const response = await fetch(
-        `/api/room/balance?roomId=${roomId}&addr=${currentAddr}&seed=${seed}`,
-      );
-      const data = await response.json();
-      const microUsdc = Number(data?.balanceMicroUsdc ?? 0);
-      if (Number.isFinite(microUsdc)) {
-        setBalance({ microUsdc, status: 'idle' });
-      }
-    } catch {
-      setBalance((prev) => ({ ...prev, status: 'idle' }));
-    }
-  }, [currentAddr, identityRole, identities.guestAddr, roomId]);
 
   const fetchChainBalance = useCallback(async () => {
     if (!currentAddr) return;
@@ -317,114 +253,211 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
   }, [currentAddr]);
 
   useEffect(() => {
-    if (mode === 'demo' && identityRole === 'host') return;
-    fetchRoomState();
-  }, [fetchRoomState, mode, identityRole]);
-
-  useEffect(() => {
-    if (mode === 'demo' && identityRole === 'host') return;
-    fetchBalance();
-  }, [fetchBalance, mode, identityRole]);
-
-  useEffect(() => {
     fetchChainBalance();
   }, [fetchChainBalance, currentAddr]);
 
-  useInterval(fetchRoomState, mode === 'demo' && identityRole === 'host' ? null : 2500);
-  useInterval(
-    fetchMessages,
-    mode === 'demo' && identityRole === 'host' ? null : hostOnline || hasInteracted ? 1200 : null,
-  );
-  useInterval(
-    fetchBalance,
-    mode === 'demo' && identityRole === 'host'
-      ? null
-      : currentAddr && (hostOnline || hasInteracted)
-        ? 4000
-        : null,
-  );
+  useEffect(() => {
+    if (!currentAddr) return;
+    if (balances[currentAddr] !== undefined) return;
+    const seed =
+      identityRole === 'guest' && currentAddr === identities.guestAddr ? DEFAULT_GUEST_SEED : 0;
+    setBalance(currentAddr, seed);
+  }, [balances, currentAddr, identityRole, identities.guestAddr, setBalance]);
 
   const handleSend = async () => {
     if (sending) return;
     const userText = chatInput.trim();
     if (!userText || !currentAddr) return;
-    if (!hostOnline) {
-      setChatInput('');
-      return;
-    }
 
-    setHasInteracted(true);
     setSending(true);
     setModalError(null);
     setChatInput('');
 
     try {
-      if (mode === 'demo' && identityRole === 'host') {
-        const token = lmStudioToken.trim();
-        const root = lmStudioUrl
-          .trim()
-          .replace(/\/+$/, '')
-          .replace(/\/api\/v1$/i, '')
-          .replace(/\/v1$/i, '');
-        const endpoint = `${root}/api/v1/chat`;
-        const userMessage: Message = {
+      const promptMessage: Message = {
+        id: crypto.randomUUID(),
+        roomId,
+        kind: 'prompt',
+        from: currentAddr ?? 'guest',
+        text: userText,
+        createdAt: Date.now(),
+        promptId: null,
+      };
+      setMessages((prev) => mergeMessages(prev, [promptMessage]));
+
+      if (!hostState?.modelConnected) {
+        const systemMessage: Message = {
           id: crypto.randomUUID(),
           roomId,
-          kind: 'prompt',
-          from: currentAddr ?? 'host',
-          text: userText,
+          kind: 'system',
+          from: 'system',
+          text: 'No model connected.',
           createdAt: Date.now(),
-          promptId: null,
+          promptId: promptMessage.id,
         };
-        setMessages((prev) => mergeMessages(prev, [userMessage]));
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          },
-          body: JSON.stringify({
-            model: modelId,
-            input: userText,
-          }),
-        });
-        if (!response.ok) {
-          throw new Error(`LM Studio responded with ${response.status}`);
-        }
-        const data = (await response.json()) as Record<string, unknown>;
-        const output = data?.output ?? data?.response ?? data?.choices?.[0]?.message?.content ?? '';
-        const stats = extractLmStudioStats(data);
-        const assistantMessage: Message = {
-          id: crypto.randomUUID(),
-          roomId,
-          kind: 'response',
-          from: currentAddr ?? 'host',
-          text: typeof output === 'string' ? output : JSON.stringify(output),
-          createdAt: Date.now(),
-          promptId: userMessage.id,
-          meta: stats ?? undefined,
-        };
-        setMessages((prev) => mergeMessages(prev, [assistantMessage]));
+        setMessages((prev) => mergeMessages(prev, [systemMessage]));
         return;
       }
 
-      const response = await fetch('/api/room/message', {
+      const contextMessages = mergeMessages(messages, [promptMessage])
+        .filter((msg) => msg.kind === 'prompt' || msg.kind === 'response')
+        .slice(-12)
+        .map((msg) => ({
+          role: msg.kind === 'prompt' ? 'user' : 'assistant',
+          content: msg.text,
+        }));
+
+      const isGuest = identityRole === 'guest' && currentAddr !== hostState.recvAddr;
+      const endpoint = isGuest ? '/api/lmstudio/chat' : '/api/lmstudio/chat-free';
+      const fetcher = isGuest && fetchWithPayment ? fetchWithPayment : fetch;
+
+      if (isGuest && !fetchWithPayment) {
+        const systemMessage: Message = {
+          id: crypto.randomUUID(),
+          roomId,
+          kind: 'system',
+          from: 'system',
+          text: paymentError ?? 'Payment client not ready.',
+          createdAt: Date.now(),
+          promptId: promptMessage.id,
+        };
+        setMessages((prev) => mergeMessages(prev, [systemMessage]));
+        return;
+      }
+
+      const response = await fetcher(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          roomId,
-          from: currentAddr,
-          text: userText,
+          baseUrl: hostState.lmStudioUrl,
+          token: hostState.lmStudioToken,
+          modelId: hostState.modelId,
+          messages: contextMessages,
           maxTokens: 256,
+          ...(isGuest
+            ? {
+                rateUsdcPer1k: hostState.rateUsdcPer1k,
+              }
+            : {}),
         }),
       });
-      const data = await response.json();
-      const nextMessages = [data?.prompt, data?.response, data?.system].filter(
-        Boolean,
-      ) as Message[];
-      if (nextMessages.length > 0) {
-        setMessages((prev) => mergeMessages(prev, nextMessages));
-        setLastSeen((prev) => Math.max(prev, nextMessages[nextMessages.length - 1].createdAt));
+
+      if (!response.ok && response.status !== 402) {
+        throw new Error(`Request failed with status ${response.status}`);
+      }
+
+      const contentType = response.headers.get('content-type') || '';
+      const isJson = contentType.includes('application/json');
+
+      let data: Record<string, unknown> | null = null;
+      let textContent: string | null = null;
+      const responseText = await response.text().catch(() => '');
+
+      if (isJson && responseText.trim()) {
+        try {
+          data = JSON.parse(responseText) as Record<string, unknown>;
+        } catch {
+          textContent = responseText;
+        }
+      } else if (responseText) {
+        textContent = responseText;
+      }
+
+      let transactionHash: string | null = null;
+      let amountMicroUsdc: number | null = null;
+      const paymentResponse = response.headers.get('PAYMENT-RESPONSE');
+      if (paymentResponse) {
+        try {
+          const decoded = decodePaymentResponseHeader(paymentResponse) as Record<string, unknown>;
+          transactionHash =
+            typeof decoded?.transaction === 'string' ? decoded.transaction : transactionHash;
+          const directAmount = decoded?.amount;
+          const nestedAmount =
+            (decoded?.price as { amount?: unknown } | undefined)?.amount ??
+            (decoded?.payment as { amount?: unknown } | undefined)?.amount;
+          const rawAmount =
+            typeof directAmount === 'string' || typeof directAmount === 'number'
+              ? directAmount
+              : nestedAmount;
+          if (typeof rawAmount === 'string' || typeof rawAmount === 'number') {
+            const parsed = Number(rawAmount);
+            if (Number.isFinite(parsed)) {
+              amountMicroUsdc = parsed;
+            }
+          }
+        } catch {
+          // ignore decode errors
+        }
+      }
+
+      const text = data && typeof data.text === 'string' ? data.text : (textContent ?? '');
+      if (!text && response.status === 402) {
+        const systemMessage: Message = {
+          id: crypto.randomUUID(),
+          roomId,
+          kind: 'system',
+          from: 'system',
+          text: 'Payment required. Please try again as guest with a funded wallet.',
+          createdAt: Date.now(),
+          promptId: promptMessage.id,
+        };
+        setMessages((prev) => mergeMessages(prev, [systemMessage]));
+        return;
+      }
+
+      const assistantMessage: Message = {
+        id: crypto.randomUUID(),
+        roomId,
+        kind: 'response',
+        from: hostState.hostAddr,
+        text,
+        createdAt: Date.now(),
+        promptId: promptMessage.id,
+        meta: {
+          txHash: transactionHash ?? undefined,
+          amountMicroUsdc:
+            amountMicroUsdc !== null ? Math.round(amountMicroUsdc).toString() : undefined,
+          tokenUsage:
+            typeof (data as { usage?: { tokenUsage?: number } } | null)?.usage?.tokenUsage ===
+            'number'
+              ? (data as { usage: { tokenUsage: number } }).usage.tokenUsage
+              : typeof (data as { stats?: { total_output_tokens?: number } } | null)?.stats
+                    ?.total_output_tokens === 'number'
+                ? (data as { stats: { total_output_tokens: number } }).stats.total_output_tokens
+                : undefined,
+          tokensPerSecond:
+            typeof (data as { usage?: { tokensPerSecond?: number } } | null)?.usage
+              ?.tokensPerSecond === 'number'
+              ? (data as { usage: { tokensPerSecond: number } }).usage.tokensPerSecond
+              : typeof (data as { stats?: { tokens_per_second?: number } } | null)?.stats
+                    ?.tokens_per_second === 'number'
+                ? (data as { stats: { tokens_per_second: number } }).stats.tokens_per_second
+                : undefined,
+          modelId: hostState.modelId,
+        },
+      };
+      setMessages((prev) => mergeMessages(prev, [assistantMessage]));
+
+      if (isGuest) {
+        const usageToken =
+          typeof (data as { usage?: { tokenUsage?: number } } | null)?.usage?.tokenUsage ===
+          'number'
+            ? (data as { usage: { tokenUsage: number } }).usage.tokenUsage
+            : null;
+        const computedMicro =
+          typeof usageToken === 'number'
+            ? Math.max(
+                1,
+                Math.round(
+                  Math.ceil(usageToken / TOKEN_PRICE_UNIT) * hostState.rateUsdcPer1k * 1_000_000,
+                ),
+              )
+            : null;
+        const settledMicro = amountMicroUsdc ?? computedMicro;
+        if (typeof settledMicro === 'number') {
+          addBalance(currentAddr, -settledMicro);
+          addBalance(hostState.recvAddr, settledMicro);
+        }
       }
     } catch {
       // ignore
@@ -549,86 +582,45 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
       return;
     }
 
-    if (mode === 'demo' && identityRole === 'host') {
-      setHostOnlineLocal(true);
-      setHostState({
-        hostAddr: currentAddr,
-        recvAddr: currentAddr,
-        lmStudioUrl: lmStudioUrl.trim(),
-        lmStudioToken: lmStudioToken.trim() || undefined,
-        modelId,
-        rateUsdcPer1k: parsedRate,
-        modelConnected: true,
-        lastSeen: Date.now(),
-      });
-      setModalOpen(false);
-      return;
-    }
-
     setClaimLoading(true);
-    setModalError(null);
-    try {
-      const response = await fetch('/api/room/claim-host', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          roomId,
-          hostAddr: currentAddr,
-          recvAddr: currentAddr,
-          lmStudioUrl: lmStudioUrl.trim(),
-          lmStudioToken: lmStudioToken.trim() || undefined,
-          modelId,
-          rateUsdcPer1k: parsedRate,
-        }),
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data?.error ?? 'Failed to go online');
-      }
-      setHostState(data?.host ?? null);
-      setModalOpen(false);
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Failed to go online';
-      setModalError(message);
-    } finally {
-      setClaimLoading(false);
-    }
+    setHostState({
+      hostAddr: currentAddr,
+      recvAddr: currentAddr,
+      lmStudioUrl: lmStudioUrl.trim(),
+      lmStudioToken: lmStudioToken.trim() || undefined,
+      modelId,
+      rateUsdcPer1k: parsedRate,
+      modelConnected: true,
+      lastSeen: Date.now(),
+    });
+    setModalOpen(false);
+    setClaimLoading(false);
   };
 
   const handleReleaseHost = async () => {
     if (!currentAddr) return;
-    if (mode === 'demo' && identityRole === 'host') {
-      setHostOnlineLocal(false);
-      setHostState(null);
-      setModalOpen(false);
-      return;
-    }
     setClaimLoading(true);
-    try {
-      await fetch('/api/room/release-host', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ roomId, hostAddr: currentAddr }),
-      });
-      setHostState(null);
-      setModalOpen(false);
-    } catch {
-      // ignore
-    } finally {
-      setClaimLoading(false);
-    }
+    setHostState(null);
+    setModalOpen(false);
+    setClaimLoading(false);
   };
 
-  const balanceLabel = identityRole === 'host' ? 'Balance' : 'Balance';
+  const balanceLabel = identityRole === 'host' ? 'Earned' : 'Balance';
   const balanceValue =
     chainBalance !== null
       ? `${chainBalance.toFixed(4)} USDC`
-      : `${(balance.microUsdc / 1_000_000).toFixed(2)} USDC`;
+      : `${((balances[currentAddr ?? ''] ?? 0) / 1_000_000).toFixed(2)} USDC`;
   const bannerVisible = !hostOnline;
   const modelLabel = hostState?.modelId ? `Model: ${hostState.modelId}` : 'No model connected';
   const canOpenModal = identityRole === 'host';
   const navButtonLabel =
-    identityRole === 'host' ? (hostOnline ? modelLabel : 'Connect model') : 'No model connected';
+    identityRole === 'host'
+      ? hostOnline
+        ? modelLabel
+        : 'Connect model'
+      : hostState?.modelId
+        ? modelLabel
+        : 'No model connected';
 
   return (
     <div className="flex min-h-screen flex-col relative text-foreground">
@@ -653,13 +645,16 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
             </Button>
           </div>
           <div className="flex items-center gap-2">
-            {showGuestLink ? (
-              <Button asChild variant="ghost" size="sm">
-                <Link href={shareLink || '/demo/guest'}>Guest Room</Link>
+            <div className="flex items-center gap-1 rounded-full border border-border/60 p-1 text-xs">
+              <Button asChild size="sm" variant={identityRole === 'host' ? 'secondary' : 'ghost'}>
+                <Link href={hostRoute}>Host</Link>
               </Button>
-            ) : null}
+              <Button asChild size="sm" variant={identityRole === 'guest' ? 'secondary' : 'ghost'}>
+                <Link href={guestRoute}>Guest</Link>
+              </Button>
+            </div>
             <Badge variant="secondary" className="px-3 py-1 text-xs">
-              {balanceLabel}: {chainBalanceLoading ? 'Loading...' : balanceValue}
+              Balance: {chainBalanceLoading ? 'Loading...' : balanceValue}
             </Badge>
           </div>
         </div>
@@ -697,7 +692,23 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
                 }
 
                 const isAssistant = message.kind === 'response';
-                const isCurrent = !isAssistant && message.from === currentAddr;
+                const isHostMessage = !isAssistant && message.from === hostState?.hostAddr;
+                const isGuestMessage = !isAssistant && message.from === identities.guestAddr;
+                const modelName = message.meta?.modelId ?? hostState?.modelId ?? 'Model';
+                const senderLabel = isAssistant
+                  ? modelName
+                  : isHostMessage
+                    ? 'Host'
+                    : isGuestMessage
+                      ? 'Guest'
+                      : 'User';
+                const senderInitial = isAssistant
+                  ? modelName.slice(0, 2).toUpperCase()
+                  : isHostMessage
+                    ? 'H'
+                    : isGuestMessage
+                      ? 'G'
+                      : 'U';
                 const parsed =
                   message.kind === 'response'
                     ? parseReasoning(message.text)
@@ -705,13 +716,31 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
                 const tokenUsage = message.meta?.tokenUsage;
                 const tokensPerSecond = message.meta?.tokensPerSecond;
                 const rateValue = hostState?.rateUsdcPer1k;
-                const hasCost = isAssistant && tokenUsage && rateValue;
+                const isHostViewer = identityRole === 'host';
+                const settledMicro = message.meta?.amountMicroUsdc
+                  ? Number(message.meta.amountMicroUsdc)
+                  : null;
+                const promptSource = isAssistant
+                  ? messages.find((item) => item.id === message.promptId)
+                  : null;
+                const isHostPrompt = promptSource?.from === hostState?.hostAddr;
+                const hasCost =
+                  isAssistant &&
+                  !isHostPrompt &&
+                  (typeof settledMicro === 'number' ||
+                    (tokenUsage && rateValue && typeof tokenUsage === 'number'));
                 const costMicro =
-                  hasCost && typeof tokenUsage === 'number'
-                    ? Math.ceil(tokenUsage / 1000) * rateValue * 1_000_000
-                    : null;
+                  hasCost && typeof settledMicro === 'number'
+                    ? settledMicro
+                    : hasCost && typeof tokenUsage === 'number' && typeof rateValue === 'number'
+                      ? Math.ceil(tokenUsage / TOKEN_PRICE_UNIT) * rateValue * 1_000_000
+                      : null;
                 const costDisplay =
-                  costMicro !== null ? `${(costMicro / 1_000_000).toFixed(4)} USDC` : null;
+                  costMicro !== null
+                    ? `${(costMicro / 1_000_000).toFixed(4)} USDC`
+                    : isHostPrompt || isHostMessage || isHostViewer
+                      ? '0.0000 USDC'
+                      : null;
                 const receiptLink =
                   typeof message.meta?.txHash === 'string' && message.meta.txHash.startsWith('0x')
                     ? `https://explorer.aptoslabs.com/txn/${message.meta.txHash}?network=testnet`
@@ -762,32 +791,26 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
                         ) : null}
                       </div>
                     ) : null}
-                    <Message
-                      className={`w-full items-start ${
-                        isAssistant ? 'justify-start' : isCurrent ? 'justify-end' : 'justify-start'
-                      }`}
-                    >
-                      {isAssistant ? (
-                        <MessageAvatar
-                          src=""
-                          alt="assistant"
-                          fallback="AI"
-                          className="bg-muted text-muted-foreground"
-                        />
-                      ) : null}
-                      <div
-                        className={`max-w-[72%] space-y-2 ${
-                          isAssistant ? '' : isCurrent ? 'ml-auto text-right' : ''
-                        }`}
-                      >
+                    <MessageBubble className="w-full items-start justify-start">
+                      <MessageAvatar
+                        src=""
+                        alt={senderLabel.toLowerCase()}
+                        fallback={senderInitial}
+                        className="bg-muted text-muted-foreground"
+                      />
+                      <div className="max-w-[72%] space-y-2">
+                        <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                          {senderLabel}
+                          {!isAssistant && message.from
+                            ? ` • ${message.from.slice(0, 6)}…${message.from.slice(-4)}`
+                            : ''}
+                        </div>
                         <MessageContent
                           markdown={message.kind === 'response'}
                           className={
                             isAssistant
                               ? 'bg-transparent text-foreground border border-border/40'
-                              : isCurrent
-                                ? 'bg-transparent text-primary border border-primary/50'
-                                : 'bg-transparent text-foreground border border-border/40'
+                              : 'bg-transparent text-foreground border border-border/40'
                           }
                         >
                           {parsed.content}
@@ -824,12 +847,12 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
                           </div>
                         ) : null}
                       </div>
-                    </Message>
+                    </MessageBubble>
                   </div>
                 );
               })}
               {sending ? (
-                <Message className="justify-start">
+                <MessageBubble className="justify-start">
                   <MessageAvatar
                     src=""
                     alt="assistant"
@@ -839,7 +862,7 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
                   <MessageContent markdown className="text-muted-foreground">
                     Thinking...
                   </MessageContent>
-                </Message>
+                </MessageBubble>
               ) : null}
             </div>
           </ScrollArea>
@@ -925,7 +948,9 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
               </div>
 
               <div className="space-y-2">
-                <label className="text-muted-foreground">Rate (USDC / 1k output tokens)</label>
+                <label className="text-muted-foreground">
+                  Rate (USDC / {TOKEN_PRICE_UNIT} output tokens)
+                </label>
                 <Input value={rate} onChange={(event) => setRate(event.target.value)} />
               </div>
             </div>

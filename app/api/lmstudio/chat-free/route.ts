@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextResponse } from 'next/server'
 
 import { LM_STUDIO_DEFAULT_BASE_URL } from '@/config/constants'
 
@@ -22,6 +22,22 @@ type Body = {
   maxTokens?: number
 }
 
+const extractText = (payload: Record<string, unknown>) => {
+  const output = payload?.output ?? payload?.response
+  if (Array.isArray(output)) {
+    return JSON.stringify(output)
+  }
+  if (typeof output === 'string' && output.trim().length > 0) {
+    return output.trim()
+  }
+  const choices = payload?.choices as Array<{ message?: { content?: unknown } }> | undefined
+  const content = choices?.[0]?.message?.content
+  if (typeof content === 'string') {
+    return content.trim()
+  }
+  return ''
+}
+
 const parseTokenUsage = (payload: Record<string, unknown>) => {
   const usage = payload?.usage as Record<string, unknown> | undefined
   const stats = payload?.stats as Record<string, unknown> | undefined
@@ -40,23 +56,7 @@ const parseTokenUsage = (payload: Record<string, unknown>) => {
   }
 }
 
-const extractText = (payload: Record<string, unknown>) => {
-  const output = payload?.output ?? payload?.response
-  if (Array.isArray(output)) {
-    return JSON.stringify(output)
-  }
-  if (typeof output === 'string' && output.trim().length > 0) {
-    return output.trim()
-  }
-  const choices = payload?.choices as Array<{ message?: { content?: unknown } }> | undefined
-  const content = choices?.[0]?.message?.content
-  if (typeof content === 'string') {
-    return content.trim()
-  }
-  return ''
-}
-
-export async function POST(request: NextRequest) {
+export async function POST(request: Request) {
   const body = (await request.json().catch(() => null)) as Body | null
 
   if (!body || typeof body !== 'object') {

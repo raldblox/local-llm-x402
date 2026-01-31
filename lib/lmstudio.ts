@@ -138,47 +138,21 @@ export const createLMStudioChatCompletion = async ({
       headers.Authorization = `Bearer ${token}`
     }
 
-    const attempts = [
-      {
-        url: `${normalized}/api/v1/chat`,
-        body: {
-          model: modelId,
-          input: prompt,
-          temperature,
-          ...(target ? { target } : {}),
-        },
-      },
-      {
-        url: `${normalized}/v1/chat/completions`,
-        body: {
-          model: modelId,
-          stream: false,
-          temperature,
-          ...(target ? { target } : {}),
-          messages: [
-            ...(trimmedSystemPrompt ? [{ role: 'system', content: trimmedSystemPrompt }] : []),
-            {
-              role: 'user',
-              content: prompt,
-            },
-          ],
-        },
-      },
-    ]
+    const response = await fetch(`${normalized}/api/v1/chat`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: modelId,
+        input: prompt,
+        temperature,
+        ...(target ? { target } : {}),
+        ...(trimmedSystemPrompt ? { system: trimmedSystemPrompt } : {}),
+      }),
+      signal,
+    })
 
-    let response: Response | null = null
-    for (const attempt of attempts) {
-      response = await fetch(attempt.url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(attempt.body),
-        signal,
-      })
-      if (response.ok) break
-    }
-
-    if (!response || !response.ok) {
-      throw new Error(`LM Studio responded with ${response?.status ?? 502}`)
+    if (!response.ok) {
+      throw new Error(`LM Studio responded with ${response.status}`)
     }
 
     const payload = (await response.json()) as {
