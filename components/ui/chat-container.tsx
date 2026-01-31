@@ -299,7 +299,7 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
         }));
 
       const isGuest = identityRole === 'guest' && currentAddr !== hostState.recvAddr;
-      const endpoint = isGuest ? '/api/lmstudio/chat' : '/api/lmstudio/chat-free';
+      const endpoint = '/api/lmstudio/chat';
       const fetcher = isGuest && fetchWithPayment ? fetchWithPayment : fetch;
       let transactionHash: string | null = null;
       let amountMicroUsdc: number | null = null;
@@ -320,26 +320,44 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
         return;
       }
 
+      const lmResult = await createLMStudioChatCompletion({
+        targetUrl: hostState.lmStudioUrl,
+        token: hostState.lmStudioToken,
+        modelId: hostState.modelId,
+        prompt: userText,
+        messages: contextMessages,
+      });
+
+      text = lmResult.text;
+      data = lmResult.raw as Record<string, unknown>;
+
       if (isGuest) {
+        const usageToken =
+          typeof (data as { stats?: { total_output_tokens?: number } } | null)?.stats
+            ?.total_output_tokens === 'number'
+            ? (data as { stats: { total_output_tokens: number } }).stats.total_output_tokens
+            : typeof (data as { usage?: { tokenUsage?: number } } | null)?.usage?.tokenUsage ===
+                'number'
+              ? (data as { usage: { tokenUsage: number } }).usage.tokenUsage
+              : null;
+
         const paymentResponse = await fetcher(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            baseUrl: hostState.lmStudioUrl,
-            token: hostState.lmStudioToken,
-            modelId: hostState.modelId,
-            messages: contextMessages,
-            maxTokens: 256,
+            tokenUsage: usageToken ?? undefined,
             rateUsdcPer1k: hostState.rateUsdcPer1k,
             dryRun: true,
           }),
         });
 
         if (!paymentResponse.ok && paymentResponse.status !== 402) {
-          throw new Error(`Request failed with status ${paymentResponse.status}`);
+          throw new Error(`Payment failed with status ${paymentResponse.status}`);
         }
 
         const payHeader = paymentResponse.headers.get('PAYMENT-RESPONSE');
+        const priceMicroHeader = paymentResponse.headers.get('x-price-microusdc');
+        const priceHeader = paymentResponse.headers.get('x-price-usdc');
         if (payHeader) {
           try {
             const decoded = decodePaymentResponseHeader(payHeader) as Record<string, unknown>;
@@ -354,13 +372,27 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
                 ? directAmount
                 : nestedAmount;
             if (typeof rawAmount === 'string' || typeof rawAmount === 'number') {
-              const parsed = Number(rawAmount);
-              if (Number.isFinite(parsed)) {
-                amountMicroUsdc = parsed;
+              const asNumber = typeof rawAmount === 'number' ? rawAmount : Number(rawAmount);
+              if (Number.isFinite(asNumber)) {
+                const isDecimal =
+                  (typeof rawAmount === 'string' && rawAmount.includes('.')) || asNumber < 1;
+                amountMicroUsdc = Math.round(isDecimal ? asNumber * 1_000_000 : asNumber);
               }
             }
           } catch {
             // ignore decode errors
+          }
+        }
+        if (amountMicroUsdc === null && priceMicroHeader) {
+          const parsed = Number(priceMicroHeader);
+          if (Number.isFinite(parsed)) {
+            amountMicroUsdc = Math.round(parsed);
+          }
+        }
+        if (amountMicroUsdc === null && priceHeader) {
+          const parsed = Number(priceHeader);
+          if (Number.isFinite(parsed)) {
+            amountMicroUsdc = Math.round(parsed * 1_000_000);
           }
         }
 
@@ -370,25 +402,13 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
             roomId,
             kind: 'system',
             from: 'system',
-            text: 'Payment required. Please try again as guest with a funded wallet.',
+            text: 'Payment required. Please fund the guest wallet.',
             createdAt: Date.now(),
             promptId: promptMessage.id,
           };
           setMessages((prev) => mergeMessages(prev, [systemMessage]));
-          return;
         }
       }
-
-      const lmResult = await createLMStudioChatCompletion({
-        targetUrl: hostState.lmStudioUrl,
-        token: hostState.lmStudioToken,
-        modelId: hostState.modelId,
-        prompt: userText,
-        messages: contextMessages,
-      });
-
-      text = lmResult.text;
-      data = lmResult.raw as Record<string, unknown>;
 
       const assistantMessage: Message = {
         id: crypto.randomUUID(),
@@ -423,26 +443,9 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
       };
       setMessages((prev) => mergeMessages(prev, [assistantMessage]));
 
-      if (isGuest) {
-        const usageToken =
-          typeof (data as { usage?: { tokenUsage?: number } } | null)?.usage?.tokenUsage ===
-          'number'
-            ? (data as { usage: { tokenUsage: number } }).usage.tokenUsage
-            : null;
-        const computedMicro =
-          typeof usageToken === 'number'
-            ? Math.max(
-                1,
-                Math.round(
-                  Math.ceil(usageToken / TOKEN_PRICE_UNIT) * hostState.rateUsdcPer1k * 1_000_000,
-                ),
-              )
-            : null;
-        const settledMicro = amountMicroUsdc ?? computedMicro;
-        if (typeof settledMicro === 'number') {
-          addBalance(currentAddr, -settledMicro);
-          addBalance(hostState.recvAddr, settledMicro);
-        }
+      if (isGuest && typeof amountMicroUsdc === 'number') {
+        addBalance(currentAddr, -amountMicroUsdc);
+        addBalance(hostState.recvAddr, amountMicroUsdc);
       }
     } catch {
       // ignore
@@ -547,7 +550,7 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
   return (
     <div className="flex min-h-screen flex-col relative text-foreground">
       <header className="border-b bg-background sticky z-50! top-0 border-border/60">
-        <div className="mx-auto flex h-14 w-full max-w-5xl items-center justify-between px-4">
+        <div className="mx-auto flex h-14 w-full max-w-5xl items-center justify-between">
           <div className="flex items-center gap-2">
             <Button
               variant={hostOnline ? 'secondary' : 'default'}
@@ -567,7 +570,7 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
             </Button>
           </div>
           <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1 rounded-full border border-border/60 p-1 text-xs">
+            <div className="flex items-center gap-1 rounded-xl border border-border/60 p-1 text-xs">
               <Button asChild size="sm" variant={identityRole === 'host' ? 'secondary' : 'ghost'}>
                 <Link href={hostRoute}>Host</Link>
               </Button>
@@ -582,8 +585,8 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
         </div>
       </header>
 
-      <main className="mx-auto z-0 flex w-full max-w-5xl flex-1 flex-col px-4 py-6">
-        <div className="flex flex-1 flex-col gap-4 rounded-2xl border border-border bg-muted/20 p-4">
+      <main className="mx-auto z-0 flex w-full max-w-5xl flex-1 flex-col">
+        <div className="flex flex-1 flex-col gap-4">
           {bannerVisible ? (
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-background/80 px-4 py-3 text-sm text-muted-foreground">
               <span>No model connected.</span>
@@ -606,7 +609,7 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
                 if (message.kind === 'system') {
                   return (
                     <div key={message.id} className="flex justify-center">
-                      <div className="rounded-lg border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+                      <div className="rounded-lg border border-border bg-background text-xs text-muted-foreground">
                         {message.text}
                       </div>
                     </div>
@@ -637,7 +640,6 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
                     : { content: message.text };
                 const tokenUsage = message.meta?.tokenUsage;
                 const tokensPerSecond = message.meta?.tokensPerSecond;
-                const rateValue = hostState?.rateUsdcPer1k;
                 const isHostViewer = identityRole === 'host';
                 const settledMicro = message.meta?.amountMicroUsdc
                   ? Number(message.meta.amountMicroUsdc)
@@ -646,17 +648,8 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
                   ? messages.find((item) => item.id === message.promptId)
                   : null;
                 const isHostPrompt = promptSource?.from === hostState?.hostAddr;
-                const hasCost =
-                  isAssistant &&
-                  !isHostPrompt &&
-                  (typeof settledMicro === 'number' ||
-                    (tokenUsage && rateValue && typeof tokenUsage === 'number'));
-                const costMicro =
-                  hasCost && typeof settledMicro === 'number'
-                    ? settledMicro
-                    : hasCost && typeof tokenUsage === 'number' && typeof rateValue === 'number'
-                      ? Math.ceil(tokenUsage / TOKEN_PRICE_UNIT) * rateValue * 1_000_000
-                      : null;
+                const hasCost = isAssistant && !isHostPrompt && typeof settledMicro === 'number';
+                const costMicro = hasCost && typeof settledMicro === 'number' ? settledMicro : null;
                 const costDisplay =
                   costMicro !== null
                     ? `${(costMicro / 1_000_000).toFixed(4)} USDC`
@@ -671,20 +664,20 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
                 return (
                   <div
                     key={message.id}
-                    className={`flex flex-col ${isAssistant ? 'items-start' : 'items-end'}`}
+                    className={`flex transition-all group border border-transparent hover:border-zinc-800 flex-col ${isAssistant ? 'items-start' : 'items-end'}`}
                   >
                     {(parsed.reasoning || (parsed.parts && parsed.parts.length > 0)) &&
                     isAssistant ? (
                       <div className="mb-2 w-full">
                         {parsed.reasoning ? (
-                          <MessageActions className="justify-start">
+                          <MessageActions className="justify-start p-2 border-b border-transparent group-hover:border-zinc-800">
                             <Collapsible>
                               <CollapsibleTrigger className="group flex items-center gap-1 text-xs text-muted-foreground">
                                 Thought
                                 <ChevronDown className="h-3 w-3 group-data-[state=open]:hidden" />
                                 <ChevronUp className="h-3 w-3 hidden group-data-[state=open]:inline" />
                               </CollapsibleTrigger>
-                              <CollapsibleContent className="mt-2 px-3 py-2 text-xs text-muted-foreground text-left">
+                              <CollapsibleContent className="py-2 text-xs text-muted-foreground text-left">
                                 {splitThoughtSteps(parsed.reasoning).length > 0 ? (
                                   <ol className="list-decimal space-y-1 pl-4">
                                     {splitThoughtSteps(parsed.reasoning).map((step, index) => (
@@ -713,7 +706,7 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
                         ) : null}
                       </div>
                     ) : null}
-                    <MessageBubble className="w-full items-start justify-start">
+                    <MessageBubble className="w-full p-2 items-start justify-start">
                       <MessageAvatar
                         src=""
                         alt={senderLabel.toLowerCase()}
@@ -731,8 +724,8 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
                           markdown={message.kind === 'response'}
                           className={
                             isAssistant
-                              ? 'bg-transparent text-foreground border border-border/40'
-                              : 'bg-transparent text-foreground border border-border/40'
+                              ? 'bg-transparent text-foreground '
+                              : 'bg-transparent text-foreground '
                           }
                         >
                           {parsed.content}

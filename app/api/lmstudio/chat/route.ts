@@ -76,16 +76,16 @@ export async function POST(request: NextRequest) {
 
   const dryRun = Boolean(body.dryRun)
 
-  if (!modelId || (!prompt && (!messages || messages.length === 0))) {
+  if (!dryRun && (!modelId || (!prompt && (!messages || messages.length === 0)))) {
     return NextResponse.json({ error: 'modelId and prompt/messages are required' }, { status: 400 })
   }
-
-  const normalized = normalizeBaseUrl(baseUrl)
 
   try {
     if (dryRun) {
       return NextResponse.json({ ok: true, dryRun: true })
     }
+
+    const normalized = normalizeBaseUrl(baseUrl)
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',

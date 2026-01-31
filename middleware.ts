@@ -3,6 +3,7 @@ import { x402ResourceServer, HTTPFacilitatorClient } from '@rvk_rishikesh/core/s
 import { ExactAptosScheme } from '@rvk_rishikesh/aptos/exact/server'
 import type { Network } from '@rvk_rishikesh/core/types'
 import { NextRequest, NextResponse } from 'next/server'
+import { TOKEN_PRICE_UNIT } from '@/config/constants'
 
 const FACILITATOR_URL = process.env.FACILITATOR_URL || 'https://x402-navy.vercel.app/facilitator/'
 const PAY_TO =
@@ -40,12 +41,18 @@ export async function middleware(request: NextRequest) {
         typeof body?.rateUsdcPer1k === 'number' && Number.isFinite(body.rateUsdcPer1k)
           ? body.rateUsdcPer1k
           : null
+      const tokenUsage =
+        typeof body?.tokenUsage === 'number' && Number.isFinite(body.tokenUsage)
+          ? Math.max(1, Math.round(body.tokenUsage))
+          : null
       const maxTokens =
         typeof body?.maxTokens === 'number' && Number.isFinite(body.maxTokens)
           ? Math.max(1, Math.round(body.maxTokens))
           : null
-      if (rate && maxTokens) {
-        const priceUsdc = Math.ceil(maxTokens / 1000) * rate
+      const billedTokens = tokenUsage ?? maxTokens
+      if (rate && billedTokens) {
+        const unit = TOKEN_PRICE_UNIT || 100
+        const priceUsdc = Math.ceil(billedTokens / unit) * rate
         price = priceUsdc.toFixed(6)
       }
     } catch {
@@ -68,7 +75,17 @@ export async function middleware(request: NextRequest) {
     }
 
     const chatProxy = paymentProxy(chatRoutes, resourceServer, undefined, undefined, false)
-    return chatProxy(request)
+    const response = await chatProxy(request)
+    response.headers.set('x-price-usdc', price)
+    try {
+      const parsed = Number(price)
+      if (Number.isFinite(parsed)) {
+        response.headers.set('x-price-microusdc', String(Math.round(parsed * 1_000_000)))
+      }
+    } catch {
+      // ignore header conversion errors
+    }
+    return response
   }
   return NextResponse.next()
 }
