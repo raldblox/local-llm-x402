@@ -7,6 +7,24 @@ type Body = {
   hostAddr?: string
 }
 
+type HostState = {
+  hostAddr: string
+  lastSeen?: number
+}
+
+const parseHostState = (value: unknown): HostState | null => {
+  if (typeof value !== 'string') return null
+  try {
+    const parsed = JSON.parse(value) as HostState
+    if (!parsed || typeof parsed !== 'object' || typeof parsed.hostAddr !== 'string') {
+      return null
+    }
+    return parsed
+  } catch {
+    return null
+  }
+}
+
 export async function POST(request: Request) {
   const body = (await request.json()) as Body
   const roomId = normalizeRoomId(body.roomId)
@@ -22,10 +40,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, error: 'No active host' }, { status: 404 })
   }
 
-  let hostState: any
-  try {
-    hostState = JSON.parse(existing)
-  } catch {
+  const hostState = parseHostState(existing)
+  if (!hostState) {
     return NextResponse.json({ ok: false, error: 'Invalid host state' }, { status: 500 })
   }
 

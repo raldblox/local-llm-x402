@@ -95,7 +95,11 @@ export async function POST(request: Request) {
 
   let hostState: HostState | null = null
   try {
-    hostState = JSON.parse(hostRaw) as HostState
+    if (typeof hostRaw !== 'string') {
+      hostState = null
+    } else {
+      hostState = JSON.parse(hostRaw) as HostState
+    }
   } catch {
     hostState = null
   }

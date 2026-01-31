@@ -82,14 +82,15 @@ export const fetchLMStudioModels = async (options?: LMStudioProxyOptions): Promi
       throw new Error(`LM Studio responded with ${response.status}`)
     }
 
-    const payload = await response.json()
+    const payload = (await response.json()) as { data?: unknown[] }
     const list = Array.isArray(payload?.data) ? payload.data : []
-    const normalizedList: Array<LMStudioModel | null> = list.map((model: any): LMStudioModel | null => {
+    const normalizedList: Array<LMStudioModel | null> = list.map((model: unknown): LMStudioModel | null => {
       if (!model || typeof model !== 'object') {
         return null
       }
 
-      const id = typeof model.id === 'string' ? model.id : typeof model.name === 'string' ? model.name : null
+      const record = model as Record<string, unknown>
+      const id = typeof record.id === 'string' ? record.id : typeof record.name === 'string' ? record.name : null
 
       if (!id) {
         return null
@@ -97,16 +98,18 @@ export const fetchLMStudioModels = async (options?: LMStudioProxyOptions): Promi
 
       return {
         id,
-        object: typeof model.object === 'string' ? model.object : undefined,
-        owned_by: typeof model.owned_by === 'string' ? model.owned_by : undefined,
-        description: typeof model.description === 'string' ? model.description : undefined,
-        created: typeof model.created === 'number' ? model.created : undefined,
+        object: typeof record.object === 'string' ? record.object : undefined,
+        owned_by: typeof record.owned_by === 'string' ? record.owned_by : undefined,
+        description: typeof record.description === 'string' ? record.description : undefined,
+        created: typeof record.created === 'number' ? record.created : undefined,
       }
     })
 
     return normalizedList.filter((entry): entry is LMStudioModel => Boolean(entry))
-  } catch (error: any) {
-    throw new Error(withAgentError(normalized, error?.message ?? 'Unknown error'))
+  } catch (error: unknown) {
+    throw new Error(
+      withAgentError(normalized, error instanceof Error ? error.message : 'Unknown error'),
+    )
   }
 }
 
@@ -149,7 +152,9 @@ export const createLMStudioChatCompletion = async ({
       throw new Error(`LM Studio responded with ${response.status}`)
     }
 
-    const payload = await response.json()
+    const payload = (await response.json()) as {
+      choices?: Array<{ message?: { content?: unknown } }>
+    }
     const message = payload?.choices?.[0]?.message?.content
 
     if (typeof message !== 'string') {
@@ -163,7 +168,9 @@ export const createLMStudioChatCompletion = async ({
       modelId,
       raw: payload,
     }
-  } catch (error: any) {
-    throw new Error(withAgentError(normalized, error?.message ?? 'Unknown error'))
+  } catch (error: unknown) {
+    throw new Error(
+      withAgentError(normalized, error instanceof Error ? error.message : 'Unknown error'),
+    )
   }
 }

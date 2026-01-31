@@ -23,6 +23,9 @@ export async function POST(request: Request) {
   }
 
   try {
+    if (typeof existing !== 'string') {
+      return NextResponse.json({ ok: false, error: 'Invalid host state' }, { status: 500 })
+    }
     const hostState = JSON.parse(existing)
     if (hostState.hostAddr !== hostAddr) {
       return NextResponse.json({ ok: false, error: 'Host mismatch' }, { status: 403 })
