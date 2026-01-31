@@ -73,10 +73,6 @@ export async function POST(request: Request) {
       ? body.temperature
       : 0.2
 
-  const maxTokens =
-    typeof body.maxTokens === 'number' && Number.isFinite(body.maxTokens)
-      ? Math.max(1, Math.min(4096, Math.round(body.maxTokens)))
-      : undefined
 
   if (!modelId || (!prompt && (!messages || messages.length === 0))) {
     return NextResponse.json({ error: 'modelId and prompt/messages are required' }, { status: 400 })

@@ -20,6 +20,7 @@ type Body = {
   messages?: Array<{ role: string; content: string }>
   temperature?: number
   maxTokens?: number
+  dryRun?: boolean
 }
 
 const parseTokenUsage = (payload: Record<string, unknown>) => {
@@ -73,10 +74,7 @@ export async function POST(request: NextRequest) {
       ? body.temperature
       : 0.2
 
-  const maxTokens =
-    typeof body.maxTokens === 'number' && Number.isFinite(body.maxTokens)
-      ? Math.max(1, Math.min(4096, Math.round(body.maxTokens)))
-      : undefined
+  const dryRun = Boolean(body.dryRun)
 
   if (!modelId || (!prompt && (!messages || messages.length === 0))) {
     return NextResponse.json({ error: 'modelId and prompt/messages are required' }, { status: 400 })
@@ -85,6 +83,10 @@ export async function POST(request: NextRequest) {
   const normalized = normalizeBaseUrl(baseUrl)
 
   try {
+    if (dryRun) {
+      return NextResponse.json({ ok: true, dryRun: true })
+    }
+
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     }

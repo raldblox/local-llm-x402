@@ -24,6 +24,7 @@ export interface LMStudioChatOptions {
   targetUrl?: string
   modelId: string
   prompt: string
+  messages?: Array<{ role: string; content: string }>
   token?: string
   temperature?: number
   signal?: AbortSignal
@@ -126,6 +127,7 @@ export const createLMStudioChatCompletion = async ({
   targetUrl,
   modelId,
   prompt,
+  messages,
   token,
   temperature = 0.2,
   signal,
@@ -143,17 +145,20 @@ export const createLMStudioChatCompletion = async ({
       headers.Authorization = `Bearer ${token}`
     }
 
-    const messages = [
-      ...(trimmedSystemPrompt ? [{ role: 'system', content: trimmedSystemPrompt }] : []),
-      { role: 'user', content: prompt },
-    ]
+    const requestMessages =
+      messages && messages.length > 0
+        ? messages
+        : [
+            ...(trimmedSystemPrompt ? [{ role: 'system', content: trimmedSystemPrompt }] : []),
+            { role: 'user', content: prompt },
+          ]
 
     const response = await fetch(`${normalized}/v1/chat/completions`, {
       method: 'POST',
       headers,
       body: JSON.stringify({
         model: modelId,
-        messages,
+        messages: requestMessages,
         temperature,
         ...(target ? { target } : {}),
       }),

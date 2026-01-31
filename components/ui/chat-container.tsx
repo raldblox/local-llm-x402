@@ -37,7 +37,7 @@ import {
   LM_STUDIO_DEFAULT_TARGET_URL,
   TOKEN_PRICE_UNIT,
 } from '@/config/constants';
-import { fetchLMStudioModels } from '@/lib/lmstudio';
+import { createLMStudioChatCompletion, fetchLMStudioModels } from '@/lib/lmstudio';
 import type { Message } from '@/components/ui/chat-context';
 import { useChatStore } from '@/components/ui/chat-context';
 import {
@@ -175,7 +175,6 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
   const [modalError, setModalError] = useState<string | null>(null);
   const [modelLoading, setModelLoading] = useState(false);
   const [claimLoading, setClaimLoading] = useState(false);
-  const [shareLink, setShareLink] = useState('');
   const [networkConsent, setNetworkConsent] = useState(false);
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [fetchWithPayment, setFetchWithPayment] = useState<
@@ -186,18 +185,9 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
   const currentAddr =
     identityRole === 'host' ? (identities.hostAddr ?? identities.guestAddr) : identities.guestAddr;
 
-  const showGuestLink = mode === 'demo' && identityRole === 'host';
   const canBecomeHost = !hostOnline && identityRole === 'guest';
   const hostRoute = mode === 'demo' ? '/demo/host' : '/host';
   const guestRoute = mode === 'demo' ? '/demo/guest' : '/guest';
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    if (mode !== 'demo') return;
-    const url = new URL(window.location.href);
-    url.pathname = '/demo/guest';
-    setShareLink(url.toString());
-  }, [mode]);
 
   useEffect(() => {
     if (identityRole !== 'guest') return;
@@ -312,6 +302,10 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
       const isGuest = identityRole === 'guest' && currentAddr !== hostState.recvAddr;
       const endpoint = isGuest ? '/api/lmstudio/chat' : '/api/lmstudio/chat-free';
       const fetcher = isGuest && fetchWithPayment ? fetchWithPayment : fetch;
+      let transactionHash: string | null = null;
+      let amountMicroUsdc: number | null = null;
+      let data: Record<string, unknown> | null = null;
+      let text = '';
 
       if (isGuest && !fetchWithPayment) {
         const systemMessage: Message = {
@@ -327,85 +321,75 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
         return;
       }
 
-      const response = await fetcher(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          baseUrl: hostState.lmStudioUrl,
-          token: hostState.lmStudioToken,
-          modelId: hostState.modelId,
-          messages: contextMessages,
-          maxTokens: 256,
-          ...(isGuest
-            ? {
-                rateUsdcPer1k: hostState.rateUsdcPer1k,
+      if (isGuest) {
+        const paymentResponse = await fetcher(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            baseUrl: hostState.lmStudioUrl,
+            token: hostState.lmStudioToken,
+            modelId: hostState.modelId,
+            messages: contextMessages,
+            maxTokens: 256,
+            rateUsdcPer1k: hostState.rateUsdcPer1k,
+            dryRun: true,
+          }),
+        });
+
+        if (!paymentResponse.ok && paymentResponse.status !== 402) {
+          throw new Error(`Request failed with status ${paymentResponse.status}`);
+        }
+
+        const payHeader = paymentResponse.headers.get('PAYMENT-RESPONSE');
+        if (payHeader) {
+          try {
+            const decoded = decodePaymentResponseHeader(payHeader) as Record<string, unknown>;
+            transactionHash =
+              typeof decoded?.transaction === 'string' ? decoded.transaction : transactionHash;
+            const directAmount = decoded?.amount;
+            const nestedAmount =
+              (decoded?.price as { amount?: unknown } | undefined)?.amount ??
+              (decoded?.payment as { amount?: unknown } | undefined)?.amount;
+            const rawAmount =
+              typeof directAmount === 'string' || typeof directAmount === 'number'
+                ? directAmount
+                : nestedAmount;
+            if (typeof rawAmount === 'string' || typeof rawAmount === 'number') {
+              const parsed = Number(rawAmount);
+              if (Number.isFinite(parsed)) {
+                amountMicroUsdc = parsed;
               }
-            : {}),
-        }),
+            }
+          } catch {
+            // ignore decode errors
+          }
+        }
+
+        if (paymentResponse.status === 402) {
+          const systemMessage: Message = {
+            id: crypto.randomUUID(),
+            roomId,
+            kind: 'system',
+            from: 'system',
+            text: 'Payment required. Please try again as guest with a funded wallet.',
+            createdAt: Date.now(),
+            promptId: promptMessage.id,
+          };
+          setMessages((prev) => mergeMessages(prev, [systemMessage]));
+          return;
+        }
+      }
+
+      const lmResult = await createLMStudioChatCompletion({
+        targetUrl: hostState.lmStudioUrl,
+        token: hostState.lmStudioToken,
+        modelId: hostState.modelId,
+        prompt: userText,
+        messages: contextMessages,
       });
 
-      if (!response.ok && response.status !== 402) {
-        throw new Error(`Request failed with status ${response.status}`);
-      }
-
-      const contentType = response.headers.get('content-type') || '';
-      const isJson = contentType.includes('application/json');
-
-      let data: Record<string, unknown> | null = null;
-      let textContent: string | null = null;
-      const responseText = await response.text().catch(() => '');
-
-      if (isJson && responseText.trim()) {
-        try {
-          data = JSON.parse(responseText) as Record<string, unknown>;
-        } catch {
-          textContent = responseText;
-        }
-      } else if (responseText) {
-        textContent = responseText;
-      }
-
-      let transactionHash: string | null = null;
-      let amountMicroUsdc: number | null = null;
-      const paymentResponse = response.headers.get('PAYMENT-RESPONSE');
-      if (paymentResponse) {
-        try {
-          const decoded = decodePaymentResponseHeader(paymentResponse) as Record<string, unknown>;
-          transactionHash =
-            typeof decoded?.transaction === 'string' ? decoded.transaction : transactionHash;
-          const directAmount = decoded?.amount;
-          const nestedAmount =
-            (decoded?.price as { amount?: unknown } | undefined)?.amount ??
-            (decoded?.payment as { amount?: unknown } | undefined)?.amount;
-          const rawAmount =
-            typeof directAmount === 'string' || typeof directAmount === 'number'
-              ? directAmount
-              : nestedAmount;
-          if (typeof rawAmount === 'string' || typeof rawAmount === 'number') {
-            const parsed = Number(rawAmount);
-            if (Number.isFinite(parsed)) {
-              amountMicroUsdc = parsed;
-            }
-          }
-        } catch {
-          // ignore decode errors
-        }
-      }
-
-      const text = data && typeof data.text === 'string' ? data.text : (textContent ?? '');
-      if (!text && response.status === 402) {
-        const systemMessage: Message = {
-          id: crypto.randomUUID(),
-          roomId,
-          kind: 'system',
-          from: 'system',
-          text: 'Payment required. Please try again as guest with a funded wallet.',
-          createdAt: Date.now(),
-          promptId: promptMessage.id,
-        };
-        setMessages((prev) => mergeMessages(prev, [systemMessage]));
-        return;
-      }
+      text = lmResult.text;
+      data = lmResult.raw as Record<string, unknown>;
 
       const assistantMessage: Message = {
         id: crypto.randomUUID(),
@@ -550,7 +534,6 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
     setClaimLoading(false);
   };
 
-  const balanceLabel = identityRole === 'host' ? 'Earned' : 'Balance';
   const balanceValue =
     chainBalance !== null
       ? `${chainBalance.toFixed(4)} USDC`
