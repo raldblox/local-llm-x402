@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
   const normalized = normalizeBaseUrl(baseUrl)
 
   try {
-    const endpoints = [`${normalized}/v1/models`]
+    const endpoints = [`${normalized}/api/v1/models`]
     let lastStatus = 502
     let lastError = 'Failed to reach LM Studio'
 

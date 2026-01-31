@@ -94,15 +94,12 @@ export async function POST(request: NextRequest) {
       headers.Authorization = `Bearer ${token}`
     }
 
-    const lmResponse = await fetch(`${normalized}/v1/chat/completions`, {
+    const lmResponse = await fetch(`${normalized}/api/v1/chat`, {
       method: 'POST',
       headers,
       body: JSON.stringify({
         model: modelId,
-        messages:
-          messages && messages.length > 0
-            ? messages
-            : [{ role: 'user', content: prompt }],
+        input: prompt || messages?.[messages.length - 1]?.content || '',
         temperature,
       }),
     })

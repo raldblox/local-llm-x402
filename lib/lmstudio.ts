@@ -66,7 +66,7 @@ const withAgentError = (baseUrl: string, message: string) => {
 const buildModelsEndpoint = (options?: LMStudioProxyOptions) => {
   const normalized = normalizeBaseUrl(options?.baseUrl)
   const target = options?.targetUrl?.trim()
-  const url = new URL(`${normalized}/v1/models`)
+  const url = new URL(`${normalized}/api/v1/models`)
 
   if (target) {
     url.searchParams.set('target', target)
@@ -91,28 +91,66 @@ export const fetchLMStudioModels = async (options?: LMStudioProxyOptions): Promi
       throw new Error(`LM Studio responded with ${response.status}`)
     }
 
-    const payload = (await response.json()) as { data?: unknown[] }
-    const list = Array.isArray(payload?.data) ? payload.data : []
-    const normalizedList: Array<LMStudioModel | null> = list.map((model: unknown): LMStudioModel | null => {
-      if (!model || typeof model !== 'object') {
-        return null
-      }
+    const payload = (await response.json()) as
+      | {
+          data?: unknown[]
+          models?: unknown[]
+          modelList?: unknown[]
+        }
+      | unknown[]
+    const list = Array.isArray(payload)
+      ? payload
+      : Array.isArray(payload?.data)
+        ? payload.data
+        : Array.isArray(payload?.models)
+          ? payload.models
+          : Array.isArray(payload?.modelList)
+            ? payload.modelList
+            : []
+    const normalizedList: Array<LMStudioModel | null> = list.map(
+      (model: unknown): LMStudioModel | null => {
+        if (typeof model === 'string') {
+          return { id: model }
+        }
 
-      const record = model as Record<string, unknown>
-      const id = typeof record.id === 'string' ? record.id : typeof record.name === 'string' ? record.name : null
+        if (!model || typeof model !== 'object') {
+          return null
+        }
 
-      if (!id) {
-        return null
-      }
+        const record = model as Record<string, unknown>
+        const id =
+          typeof record.id === 'string'
+            ? record.id
+            : typeof record.model === 'string'
+              ? record.model
+              : typeof record.name === 'string'
+                ? record.name
+                : typeof record.key === 'string'
+                  ? record.key
+                  : typeof record.selected_variant === 'string'
+                    ? record.selected_variant
+                    : Array.isArray(record.variants) && typeof record.variants[0] === 'string'
+                      ? record.variants[0]
+                      : null
 
-      return {
-        id,
-        object: typeof record.object === 'string' ? record.object : undefined,
-        owned_by: typeof record.owned_by === 'string' ? record.owned_by : undefined,
-        description: typeof record.description === 'string' ? record.description : undefined,
-        created: typeof record.created === 'number' ? record.created : undefined,
-      }
-    })
+        if (!id) {
+          return null
+        }
+
+        return {
+          id,
+          object: typeof record.object === 'string' ? record.object : undefined,
+          owned_by: typeof record.owned_by === 'string' ? record.owned_by : undefined,
+          description:
+            typeof record.description === 'string'
+              ? record.description
+              : typeof record.display_name === 'string'
+                ? record.display_name
+                : undefined,
+          created: typeof record.created === 'number' ? record.created : undefined,
+        }
+      },
+    )
 
     return normalizedList.filter((entry): entry is LMStudioModel => Boolean(entry))
   } catch (error: unknown) {
@@ -153,12 +191,15 @@ export const createLMStudioChatCompletion = async ({
             { role: 'user', content: prompt },
           ]
 
-    const response = await fetch(`${normalized}/v1/chat/completions`, {
+    const lastMessage =
+      requestMessages.length > 0 ? requestMessages[requestMessages.length - 1]?.content : prompt
+
+    const response = await fetch(`${normalized}/api/v1/chat`, {
       method: 'POST',
       headers,
       body: JSON.stringify({
         model: modelId,
-        messages: requestMessages,
+        input: typeof lastMessage === 'string' ? lastMessage : prompt,
         temperature,
         ...(target ? { target } : {}),
       }),
@@ -175,11 +216,13 @@ export const createLMStudioChatCompletion = async ({
       response?: unknown
     }
     const message =
-      typeof payload.output === 'string'
-        ? payload.output
-        : typeof payload.response === 'string'
-          ? payload.response
-          : payload?.choices?.[0]?.message?.content
+      Array.isArray(payload.output)
+        ? JSON.stringify(payload.output)
+        : typeof payload.output === 'string'
+          ? payload.output
+          : typeof payload.response === 'string'
+            ? payload.response
+            : payload?.choices?.[0]?.message?.content
 
     if (typeof message !== 'string') {
       throw new Error('LM Studio response missing content')

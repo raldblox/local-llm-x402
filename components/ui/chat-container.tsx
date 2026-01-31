@@ -175,7 +175,6 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
   const [modalError, setModalError] = useState<string | null>(null);
   const [modelLoading, setModelLoading] = useState(false);
   const [claimLoading, setClaimLoading] = useState(false);
-  const [networkConsent, setNetworkConsent] = useState(false);
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [fetchWithPayment, setFetchWithPayment] = useState<
     ((input: RequestInfo, init?: RequestInit) => Promise<Response>) | null
@@ -458,11 +457,6 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
       setModalError('Enter a valid LM Studio URL.');
       return;
     }
-    if (!networkConsent) {
-      setModalError('Please approve local network access first.');
-      return;
-    }
-
     setModelLoading(true);
     setModalError(null);
     let timeout: ReturnType<typeof setTimeout> | null = null;
@@ -842,21 +836,11 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
                   The browser will call the local proxy on port 4312 and forward to this target URL.
                 </p>
               </div>
-              <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-                <div>
-                  Allow local network access
-                  <div className="text-[11px] text-muted-foreground/80">
-                    Required to reach LM Studio or your agent URL.
-                  </div>
+              <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                Allow local network access
+                <div className="text-[11px] text-muted-foreground/80">
+                  The browser must reach the local proxy at 127.0.0.1:4312 to connect to LM Studio.
                 </div>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={networkConsent ? 'secondary' : 'outline'}
-                  onClick={() => setNetworkConsent((prev) => !prev)}
-                >
-                  {networkConsent ? 'Approved' : 'Approve'}
-                </Button>
               </div>
               <div className="space-y-2">
                 <label className="text-muted-foreground">Bearer token (optional)</label>
