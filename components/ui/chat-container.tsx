@@ -18,6 +18,11 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { ArrowUp, ChevronDown, ChevronUp, Coins, Gauge, Hash, Square } from 'lucide-react';
+import {
+  DEFAULT_GUEST_BALANCE_SEED,
+  DEFAULT_RATE_USDC_PER_1K,
+  LM_STUDIO_DEFAULT_BASE_URL,
+} from '@/config/constants';
 
 type LandingMode = 'root' | 'demo';
 type DemoRole = 'host' | 'guest';
@@ -86,9 +91,9 @@ const splitThoughtSteps = (input?: string) => {
   return lines.map((line) => line.replace(/^(\d+[\).\s]|[-*]\s+)/, '').trim());
 };
 
-const DEFAULT_LM_URL = 'http://localhost:1234';
-const DEFAULT_RATE = 0.75;
-const DEFAULT_GUEST_SEED = 100_000_000;
+const DEFAULT_LM_URL = LM_STUDIO_DEFAULT_BASE_URL;
+const DEFAULT_RATE = DEFAULT_RATE_USDC_PER_1K;
+const DEFAULT_GUEST_SEED = DEFAULT_GUEST_BALANCE_SEED;
 const USDC_METADATA = '0x69091fbab5f7d635ee7ac5098cf0c1efbe31d68fec0f2cd565e8d168daf52832';
 const USDC_DECIMALS = 6;
 
@@ -109,9 +114,7 @@ const extractLmStudioStats = (data: Record<string, unknown>) => {
     toNumber(stats.output_tokens) ??
     toNumber(stats.completion_tokens);
   const tokensPerSecond =
-    toNumber(stats.tokens_per_second) ??
-    toNumber(stats.tok_per_sec) ??
-    toNumber(stats.tps);
+    toNumber(stats.tokens_per_second) ?? toNumber(stats.tok_per_sec) ?? toNumber(stats.tps);
   const reasoningTokens = toNumber(stats.reasoning_output_tokens);
   if (tokenUsage === null && tokensPerSecond === null) return null;
   return { tokenUsage, tokensPerSecond, reasoningTokens };
@@ -225,7 +228,7 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
   const currentAddr =
     identityRole === 'host' ? (identities.hostAddr ?? identities.guestAddr) : identities.guestAddr;
 
-  const showGuestLink = mode === 'demo';
+  const showGuestLink = mode === 'demo' && identityRole === 'host';
   const canBecomeHost = !hostOnline && identityRole === 'guest';
   const hostRoute = mode === 'demo' ? '/demo/host' : '/host';
 
@@ -389,8 +392,7 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
           throw new Error(`LM Studio responded with ${response.status}`);
         }
         const data = (await response.json()) as Record<string, unknown>;
-        const output =
-          data?.output ?? data?.response ?? data?.choices?.[0]?.message?.content ?? '';
+        const output = data?.output ?? data?.response ?? data?.choices?.[0]?.message?.content ?? '';
         const stats = extractLmStudioStats(data);
         const assistantMessage: Message = {
           id: crypto.randomUUID(),
@@ -638,22 +640,22 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
               onClick={() => setModalOpen(true)}
               disabled={!canOpenModal}
             >
-              {navButtonLabel}
+              <span className="flex items-center gap-2">
+                {identityRole === 'host' ? (
+                  <span
+                    className={`h-2 w-2 rounded-full ${
+                      hostOnline ? 'bg-emerald-400' : 'bg-muted-foreground/50'
+                    }`}
+                  />
+                ) : null}
+                {navButtonLabel}
+              </span>
             </Button>
           </div>
           <div className="flex items-center gap-2">
-            <Badge variant="outline" className="px-3 py-1 text-xs uppercase">
-              {identityRole}
-            </Badge>
             {showGuestLink ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  if (shareLink) navigator.clipboard?.writeText(shareLink).catch(() => undefined);
-                }}
-              >
-                Copy guest link
+              <Button asChild variant="ghost" size="sm">
+                <Link href={shareLink || '/demo/guest'}>Guest Room</Link>
               </Button>
             ) : null}
             <Badge variant="secondary" className="px-3 py-1 text-xs">
@@ -710,6 +712,10 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
                     : null;
                 const costDisplay =
                   costMicro !== null ? `${(costMicro / 1_000_000).toFixed(4)} USDC` : null;
+                const receiptLink =
+                  typeof message.meta?.txHash === 'string' && message.meta.txHash.startsWith('0x')
+                    ? `https://explorer.aptoslabs.com/txn/${message.meta.txHash}?network=testnet`
+                    : null;
 
                 return (
                   <div
@@ -799,10 +805,22 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
                                 : '-'}{' '}
                               tok/sec
                             </span>
-                            <span className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5">
-                              <Coins className="h-3 w-3" />
-                              {costDisplay ?? '-'} spent
-                            </span>
+                            {receiptLink ? (
+                              <a
+                                href={receiptLink}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 hover:text-foreground"
+                              >
+                                <Coins className="h-3 w-3" />
+                                {costDisplay ?? '-'} spent
+                              </a>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5">
+                                <Coins className="h-3 w-3" />
+                                {costDisplay ?? '-'} spent
+                              </span>
+                            )}
                           </div>
                         ) : null}
                       </div>

@@ -10,22 +10,17 @@ type Message = {
   text: string
   createdAt: number
   promptId: string | null
-  meta?: {
-    txHash?: string
-    amountMicroUsdc?: string
-    tokenUsage?: number
-  }
 }
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url)
   const roomId = normalizeRoomId(searchParams.get('roomId'))
-  const afterParam = searchParams.get('after')
-  const after = afterParam ? Number(afterParam) : 0
+  const afterRaw = searchParams.get('after')
+  const after = afterRaw ? Number(afterRaw) : 0
 
   const { messagesKey } = getRoomKeys(roomId)
-  const raw = await redis.lrange(messagesKey, -200, -1)
-  const parsed = raw
+  const items = await redis.lrange(messagesKey, -200, -1)
+  const parsed = items
     .map((item) => {
       try {
         return JSON.parse(item) as Message
@@ -34,8 +29,8 @@ export async function GET(request: Request) {
       }
     })
     .filter((item): item is Message => Boolean(item))
-    .filter((item) => item.createdAt > after)
+    .filter((item) => item.createdAt > (Number.isFinite(after) ? after : 0))
     .sort((a, b) => a.createdAt - b.createdAt)
 
-  return NextResponse.json({ ok: true, messages: parsed })
+  return NextResponse.json({ messages: parsed })
 }

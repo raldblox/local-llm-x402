@@ -6,22 +6,25 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url)
   const roomId = normalizeRoomId(searchParams.get('roomId'))
   const addr = searchParams.get('addr')?.trim()
-  const seedParam = searchParams.get('seed')
-  const seed =
-    seedParam && Number.isFinite(Number(seedParam)) ? Math.round(Number(seedParam)) : undefined
+  const seedRaw = searchParams.get('seed')
+  const seed = seedRaw ? Number(seedRaw) : null
 
   if (!addr) {
-    return NextResponse.json({ ok: false, error: 'addr required' }, { status: 400 })
+    return NextResponse.json({ balanceMicroUsdc: 0 })
   }
 
   const { balancesKey } = getRoomKeys(roomId)
-  const existing = await redis.hget(balancesKey, addr)
-
-  if (existing === null && seed !== undefined) {
-    await redis.hset(balancesKey, { [addr]: seed.toString() })
+  const current = await redis.hget(balancesKey, addr)
+  if (current === null || current === undefined) {
+    if (seed && Number.isFinite(seed)) {
+      await redis.hset(balancesKey, { [addr]: Math.round(seed) })
+      return NextResponse.json({ balanceMicroUsdc: Math.round(seed) })
+    }
+    return NextResponse.json({ balanceMicroUsdc: 0 })
   }
 
-  const value = existing ?? (seed !== undefined ? seed.toString() : '0')
-
-  return NextResponse.json({ ok: true, balanceMicroUsdc: value })
+  const numeric = typeof current === 'string' ? Number(current) : Number(current)
+  return NextResponse.json({
+    balanceMicroUsdc: Number.isFinite(numeric) ? numeric : 0,
+  })
 }

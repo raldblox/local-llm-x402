@@ -19,6 +19,7 @@ export interface LMStudioChatOptions {
   targetUrl?: string
   modelId: string
   prompt: string
+  token?: string
   temperature?: number
   signal?: AbortSignal
   systemPrompt?: string
@@ -27,6 +28,7 @@ export interface LMStudioChatOptions {
 interface LMStudioProxyOptions {
   baseUrl?: string
   targetUrl?: string
+  token?: string
 }
 
 const normalizeBaseUrl = (input?: string) => {
@@ -58,7 +60,7 @@ const withAgentError = (baseUrl: string, message: string) => {
 const buildModelsEndpoint = (options?: LMStudioProxyOptions) => {
   const normalized = normalizeBaseUrl(options?.baseUrl)
   const target = options?.targetUrl?.trim()
-  const url = new URL(`${normalized}/v1/models`)
+  const url = new URL(`${normalized}/api/v1/models`)
 
   if (target) {
     url.searchParams.set('target', target)
@@ -75,6 +77,7 @@ export const fetchLMStudioModels = async (options?: LMStudioProxyOptions): Promi
       cache: 'no-store',
       headers: {
         Accept: 'application/json',
+        ...(options?.token ? { Authorization: `Bearer ${options.token}` } : {}),
       },
     })
 
@@ -118,6 +121,7 @@ export const createLMStudioChatCompletion = async ({
   targetUrl,
   modelId,
   prompt,
+  token,
   temperature = 0.2,
   signal,
   systemPrompt,
@@ -127,35 +131,67 @@ export const createLMStudioChatCompletion = async ({
   const trimmedSystemPrompt = systemPrompt?.trim()
 
   try {
-    const response = await fetch(`${normalized}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: modelId,
-        stream: false,
-        temperature,
-        ...(target ? { target } : {}),
-        messages: [
-          ...(trimmedSystemPrompt ? [{ role: 'system', content: trimmedSystemPrompt }] : []),
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ],
-      }),
-      signal,
-    })
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    }
+    if (token) {
+      headers.Authorization = `Bearer ${token}`
+    }
 
-    if (!response.ok) {
-      throw new Error(`LM Studio responded with ${response.status}`)
+    const attempts = [
+      {
+        url: `${normalized}/api/v1/chat`,
+        body: {
+          model: modelId,
+          input: prompt,
+          temperature,
+          ...(target ? { target } : {}),
+        },
+      },
+      {
+        url: `${normalized}/v1/chat/completions`,
+        body: {
+          model: modelId,
+          stream: false,
+          temperature,
+          ...(target ? { target } : {}),
+          messages: [
+            ...(trimmedSystemPrompt ? [{ role: 'system', content: trimmedSystemPrompt }] : []),
+            {
+              role: 'user',
+              content: prompt,
+            },
+          ],
+        },
+      },
+    ]
+
+    let response: Response | null = null
+    for (const attempt of attempts) {
+      response = await fetch(attempt.url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(attempt.body),
+        signal,
+      })
+      if (response.ok) break
+    }
+
+    if (!response || !response.ok) {
+      throw new Error(`LM Studio responded with ${response?.status ?? 502}`)
     }
 
     const payload = (await response.json()) as {
       choices?: Array<{ message?: { content?: unknown } }>
+      output?: unknown
+      response?: unknown
     }
-    const message = payload?.choices?.[0]?.message?.content
+    const message =
+      typeof payload.output === 'string'
+        ? payload.output
+        : typeof payload.response === 'string'
+          ? payload.response
+          : payload?.choices?.[0]?.message?.content
 
     if (typeof message !== 'string') {
       throw new Error('LM Studio response missing content')

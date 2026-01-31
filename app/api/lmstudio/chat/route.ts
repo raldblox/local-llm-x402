@@ -1,0 +1,204 @@
+import { NextRequest, NextResponse } from 'next/server'
+
+import { LM_STUDIO_DEFAULT_BASE_URL } from '@/config/constants'
+import { chargeForPrompt } from '@/lib/payments'
+
+const normalizeBaseUrl = (input?: string) => {
+  const trimmed = (input ?? LM_STUDIO_DEFAULT_BASE_URL).trim()
+
+  if (!trimmed) {
+    return LM_STUDIO_DEFAULT_BASE_URL
+  }
+
+  return trimmed.replace(/\/+$/, '')
+}
+
+type Body = {
+  baseUrl?: string
+  token?: string
+  modelId?: string
+  prompt?: string
+  messages?: Array<{ role: string; content: string }>
+  temperature?: number
+  maxTokens?: number
+  payerAddr?: string
+  recvAddr?: string
+  rateUsdcPer1k?: number
+}
+
+const parseTokenUsage = (payload: Record<string, unknown>) => {
+  const usage = payload?.usage as Record<string, unknown> | undefined
+  const stats = payload?.stats as Record<string, unknown> | undefined
+  const tokenUsage =
+    (typeof usage?.completion_tokens === 'number' && usage.completion_tokens) ||
+    (typeof stats?.total_output_tokens === 'number' && stats.total_output_tokens) ||
+    (typeof stats?.output_tokens === 'number' && stats.output_tokens) ||
+    null
+  const tokensPerSecond =
+    (typeof stats?.tokens_per_second === 'number' && stats.tokens_per_second) ||
+    (typeof usage?.tokens_per_second === 'number' && usage.tokens_per_second) ||
+    null
+  return {
+    tokenUsage,
+    tokensPerSecond,
+  }
+}
+
+const extractText = (payload: Record<string, unknown>) => {
+  const output = payload?.output ?? payload?.response
+  if (typeof output === 'string' && output.trim().length > 0) {
+    return output.trim()
+  }
+  const choices = payload?.choices as Array<{ message?: { content?: unknown } }> | undefined
+  const content = choices?.[0]?.message?.content
+  if (typeof content === 'string') {
+    return content.trim()
+  }
+  return ''
+}
+
+export async function POST(request: NextRequest) {
+  const body = (await request.json().catch(() => null)) as Body | null
+
+  if (!body || typeof body !== 'object') {
+    return NextResponse.json({ error: 'Invalid payload' }, { status: 400 })
+  }
+
+  const baseUrl = typeof body.baseUrl === 'string' ? body.baseUrl : undefined
+  const token = typeof body.token === 'string' ? body.token : undefined
+  const modelId = typeof body.modelId === 'string' ? body.modelId : ''
+  const prompt = typeof body.prompt === 'string' ? body.prompt : ''
+  const messages = Array.isArray(body.messages) ? body.messages : undefined
+  const temperature =
+    typeof body.temperature === 'number' && Number.isFinite(body.temperature)
+      ? body.temperature
+      : 0.2
+
+  const maxTokens =
+    typeof body.maxTokens === 'number' && Number.isFinite(body.maxTokens)
+      ? Math.max(1, Math.min(4096, Math.round(body.maxTokens)))
+      : undefined
+  const payerAddr = typeof body.payerAddr === 'string' ? body.payerAddr : undefined
+  const recvAddr = typeof body.recvAddr === 'string' ? body.recvAddr : undefined
+  const rateUsdcPer1k =
+    typeof body.rateUsdcPer1k === 'number' && Number.isFinite(body.rateUsdcPer1k)
+      ? body.rateUsdcPer1k
+      : undefined
+
+  if (!modelId || (!prompt && (!messages || messages.length === 0))) {
+    return NextResponse.json({ error: 'modelId and prompt/messages are required' }, { status: 400 })
+  }
+
+  const normalized = normalizeBaseUrl(baseUrl)
+
+  try {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    }
+    if (token) {
+      headers.Authorization = `Bearer ${token}`
+    }
+
+    const attempts: Array<{ url: string; body: Record<string, unknown> }> = []
+
+    if (messages && messages.length > 0) {
+      attempts.push({
+        url: `${normalized}/v1/chat/completions`,
+        body: {
+          model: modelId,
+          stream: false,
+          temperature,
+          messages,
+          ...(maxTokens ? { max_tokens: maxTokens } : {}),
+        },
+      })
+    } else if (prompt) {
+      attempts.push({
+        url: `${normalized}/api/v1/chat`,
+        body: {
+          model: modelId,
+          input: prompt,
+          temperature,
+          ...(maxTokens ? { max_tokens: maxTokens } : {}),
+        },
+      })
+      attempts.push({
+        url: `${normalized}/v1/chat/completions`,
+        body: {
+          model: modelId,
+          stream: false,
+          temperature,
+          messages: [
+            {
+              role: 'user',
+              content: prompt,
+            },
+          ],
+          ...(maxTokens ? { max_tokens: maxTokens } : {}),
+        },
+      })
+    }
+
+    let lastStatus = 502
+    let lastError = 'Failed to reach LM Studio'
+    let payload: Record<string, unknown> | null = null
+
+    for (const attempt of attempts) {
+      const lmResponse = await fetch(attempt.url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(attempt.body),
+      })
+
+      if (!lmResponse.ok) {
+        lastStatus = lmResponse.status
+        lastError = `LM Studio responded with ${lmResponse.status}`
+        continue
+      }
+
+      payload = (await lmResponse.json()) as Record<string, unknown>
+      break
+    }
+
+    if (!payload) {
+      return NextResponse.json(
+        { error: lastError },
+        { status: lastStatus === 404 ? 404 : 502 },
+      )
+    }
+
+    const text = extractText(payload)
+    const { tokenUsage, tokensPerSecond } = parseTokenUsage(payload)
+
+    let amountMicroUsdc: number | null = null
+    let chargeResult: { ok: boolean; txHash?: string; error?: string } | null = null
+
+    if (payerAddr && recvAddr && rateUsdcPer1k) {
+      const tokensForPrice = tokenUsage ?? maxTokens ?? 1
+      const priceUsdc = Math.ceil(tokensForPrice / 1000) * rateUsdcPer1k
+      amountMicroUsdc = Math.max(1, Math.round(priceUsdc * 1_000_000))
+      chargeResult = await chargeForPrompt({
+        payerAddr,
+        recvAddr,
+        amountMicroUsdc,
+      })
+    }
+
+    return NextResponse.json({
+      ok: true,
+      text,
+      raw: payload,
+      usage: {
+        tokenUsage,
+        tokensPerSecond,
+      },
+      charge: chargeResult,
+      amountMicroUsdc,
+    })
+  } catch (error: unknown) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Failed to reach LM Studio' },
+      { status: 502 },
+    )
+  }
+}
