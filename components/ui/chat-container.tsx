@@ -35,6 +35,7 @@ import {
   DEFAULT_GUEST_BALANCE_SEED,
   DEFAULT_RATE_USDC_PER_1K,
   LM_STUDIO_DEFAULT_TARGET_URL,
+  LM_STUDIO_PROXY_BASE_URL,
   TOKEN_PRICE_UNIT,
 } from '@/config/constants';
 import { createLMStudioChatCompletion, fetchLMStudioModels } from '@/lib/lmstudio';
@@ -82,6 +83,7 @@ const splitThoughtSteps = (input?: string) => {
 };
 
 const DEFAULT_LM_URL = LM_STUDIO_DEFAULT_TARGET_URL;
+const DEFAULT_PROXY_URL = LM_STUDIO_PROXY_BASE_URL;
 const DEFAULT_RATE = DEFAULT_RATE_USDC_PER_1K;
 const DEFAULT_GUEST_SEED = DEFAULT_GUEST_BALANCE_SEED;
 const USDC_METADATA = '0x69091fbab5f7d635ee7ac5098cf0c1efbe31d68fec0f2cd565e8d168daf52832';
@@ -168,6 +170,7 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
   const [chainBalanceLoading, setChainBalanceLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [lmStudioUrl, setLmStudioUrl] = useState(DEFAULT_LM_URL);
+  const [lmStudioProxyUrl] = useState(DEFAULT_PROXY_URL);
   const [lmStudioToken, setLmStudioToken] = useState('');
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
   const [modelId, setModelId] = useState('');
@@ -465,16 +468,29 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
     let timeout: ReturnType<typeof setTimeout> | null = null;
 
     try {
+      const controller = new AbortController();
+      timeout = setTimeout(() => controller.abort(), 7000);
       const token = lmStudioToken.trim();
-      const models = await Promise.race([
-        fetchLMStudioModels({ targetUrl: trimmedUrl, token }),
-        new Promise<never>((_, reject) => {
-          timeout = setTimeout(
-            () => reject(new Error('LM Studio timed out. Check the URL and server status.')),
-            7000,
-          );
-        }),
-      ]);
+      try {
+        const health = await fetch(`${lmStudioProxyUrl.replace(/\/+$/, '')}/health`, {
+          signal: controller.signal,
+        });
+        if (!health.ok) {
+          throw new Error('Local agent not responding.');
+        }
+      } catch (error: unknown) {
+        const message =
+          error instanceof DOMException && error.name === 'AbortError'
+            ? 'Local agent timed out. Start the proxy on your machine.'
+            : 'Local agent not reachable. Start `npm run dev` locally (proxy runs on 127.0.0.1:4312).';
+        throw new Error(message);
+      }
+
+      const models = await fetchLMStudioModels({
+        baseUrl: lmStudioProxyUrl,
+        targetUrl: trimmedUrl,
+        token,
+      });
 
       if (!models || models.length === 0) {
         throw new Error('No models found. Make sure a model is downloaded.');
@@ -839,7 +855,8 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
                   onChange={(event) => setLmStudioUrl(event.target.value)}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Requests go through your local proxy at 127.0.0.1:4312 and forward to this URL.
+                  Requests go through your local proxy at {lmStudioProxyUrl} and forward to this
+                  URL.
                 </p>
               </div>
               <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
