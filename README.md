@@ -1,248 +1,205 @@
 # local-llm-x402
 
-> **Expose your local AI model to the internet with usage-based, token-metered inference pricing using Aptos x402.**
+> **Expose local AI models to the internet with usage-based pricing, enforced via Aptos x402.**
 
-local-llm-x402 is a minimal, production-grade gateway that lets anyone expose a **locally running LLM** via LM Studio as a **paid inference API**, using a familiar, usage-based pricing model where cost is derived from tokens generated per request.
+local-llm-x402 is a production-oriented prototype that shows how **locally running AI models** can be safely exposed to external users and monetized on a **per-request basis**, without API keys, subscriptions, or centralized billing systems.
 
-Payments are enforced directly at the HTTP layer using **Aptos x402 (HTTP 402 - Payment Required)**, turning a standard inference endpoint into a monetizable, pay-per-use service without accounts, subscriptions, or custom billing infrastructure.
+The core idea is simple:
 
----
+* A **host** runs a model locally (using LM Studio)
+* The host goes online and claims a room
+* **Guests** join instantly through a familiar chat UI
+* Guest requests are charged per usage via HTTP 402 (Aptos x402)
+* Inference runs on the host’s machine and responses are returned with receipts
 
-## What this is
-
-- A **paid inference gateway** for local LLMs
-- A bridge from **localhost -> internet**
-- A **token-metered pricing model** for generation
-- Enforced using **Aptos x402**, not API keys
-
-If you can run a model locally, you can sell access to it.
+This repository demonstrates the full end-to-end flow, from local inference to on-chain settlement.
 
 ---
 
-## The familiar pricing model
+## What exists today
 
-AI developers already understand this model:
+This project is intentionally focused on proving the core primitives required for public use.
 
-- You request a generation with a `max_tokens` limit
-- Pricing is derived from token usage
-- Each request has a clear, deterministic cost
+### ✅ Working today
 
-local-llm-x402 follows the same pattern:
+* Host / Guest model with a shared chat interface
+* Local inference via **LM Studio** (OpenAI-compatible REST API)
+* Host-controlled pricing (usage-based)
+* Aptos **x402** payment enforcement for guest requests
+* Per-message receipts (tx reference + usage metadata)
+* Clear separation between local compute and cloud middleware
+* Clean ChatGPT-style UI built with modern React tooling
 
-- **Price is computed per request** based on requested output tokens
-- **Payment happens before inference** using x402
-- **Actual tokens used** are returned in the response for transparency
-
-This mirrors how modern AI services price completions, while running entirely on **your own hardware**.
-
----
-
-## Why x402
-
-Traditional AI monetization relies on:
-
-- API keys
-- Centralized billing accounts
-- Monthly invoices and usage reconciliation
-
-x402 replaces this with a native web primitive:
-
-- HTTP `402 Payment Required`
-- On-chain settlement
-- Stateless, request-level payments
-
-With x402:
-
-- Every inference call is self-contained
-- Payments are enforced by middleware
-- No user accounts are required
-
-This makes AI access composable for:
-
-- Agents
-- Scripts
-- Other APIs
+The system already demonstrates a complete value loop:
+local compute → external usage → enforced payment → transparent receipt.
 
 ---
 
-## Architecture (minimal)
+## Why this matters
+
+As local and edge AI becomes more powerful, compute is increasingly distributed, but **monetization and access control remain centralized**.
+
+local-llm-x402 introduces a different model:
+
+* Models stay local
+* Access is granted per request
+* Payment is enforced at the protocol layer
+* Anyone can become a host
+
+This unlocks new use cases for:
+
+* Individual creators hosting personal or fine-tuned models
+* Teams sharing internal AI tools safely
+* Agents paying for intelligence on demand
+* Temporary or time-based AI access without long-term accounts
+
+---
+
+## High-level architecture
 
 ```
-Host (Browser)
-  |- Host UI (sets price + payment address)
-  |- Next.js Gateway (x402 middleware + room server)
-  |- LM Studio (localhost inference)
+Host machine
+  ├─ Browser (chat UI)
+  ├─ Local LM Studio proxy (Fastify + CORS)
+  └─ LM Studio model server
 
-Guests (Browser)
-  |- Guest UI (connect wallet -> approve x402 -> chat)
-  |- Room feed (shared conversation)
+Cloud (Vercel)
+  └─ Next.js API routes
+      └─ Aptos x402 middleware (payment enforcement)
 ```
 
-- The gateway is the **only public surface**
-- The model remains local
-- Payments are validated before execution
-- Conversation is shared in a room keyed by the host link
+Key design choices:
+
+* **Inference stays local** to the host
+* **Payments are enforced in the cloud** using x402
+* The browser bridges the two via a local proxy
+* Vercel never needs access to the host’s machine
 
 ---
 
-## UI/UX spec (production-ready)
+## Current capabilities
 
-Design goals:
+### Host
 
-- Dark mode by default
-- Boxy, high-contrast UI (LM Studio-like)
-- Shadcn UI components with a purple accent theme
-- Lucide icons for status and actions
-- Transparent pricing, payment, and presence states
+* Connect a local LM Studio instance
+* Detect available models
+* Select a model and set a usage rate
+* Go online as the active host
+* Receive payments when guests use the model
 
-### Visual system
+### Guest
 
-- **Theme:** dark-first, purple accent, neutral grays for panels
-- **Components:** Shadcn cards, tabs, buttons, badges, dialogs
-- **Icons:** Lucide (status, wallet, payment, streaming, errors)
-- **Layout:** boxed panels, clear borders, minimal gradients
-
-### Host UI (critical path)
-
-- **Header:** wallet status, chain (testnet/mainnet), online toggle
-- **Model status card:** LM Studio reachable + CORS agent status
-- **Pricing card:** USDC per 1k output tokens with live cost preview
-- **Room card:** share URL + QR + copy buttons
-- **Request log:** guest wallet, max_tokens, paid amount, tx hash, tokens used, latency
-
-Blocking preflight checks:
-
-- LM Studio reachable (localhost probe)
-- CORS agent running and scoped to this origin
-- x402 middleware configured
-
-### Guest UI (critical path)
-
-- **Room state:** online/offline with auto-retry
-- **Pricing banner:** receiver address + current rate
-- **Wallet connect:** identity + USDC balance indicator
-- **Chat panel:** per-message cost preview, pay-to-send, streaming response
-- **Receipt chips:** tx hash, paid amount, token usage
-
-### Errors and edge states
-
-- Host offline -> explicit offline panel with retry
-- Pricing mismatch -> warn and use server truth
-- Wallet errors -> wrong network, no USDC, rejected tx
-- LM Studio down -> host sees blocking error with fix steps
+* Join instantly via a shared room
+* Chat with the host’s local model
+* Pay only when sending requests
+* View receipts and usage metadata per message
 
 ---
 
-## Host instructions
+## Roadmap toward public use
 
-The host runs the model locally and exposes a paid, shared AI room.
+The following items are planned to evolve this prototype into a public-ready system:
 
-### Prerequisites
+* **Room IDs per host** (multiple concurrent hosts)
+* Redis-backed room state and message persistence
+* Proper host presence detection and failover
+* Real-time sync via Redis streams or SSE
+* Streaming model responses
+* Support for additional local runtimes and providers
+* Hardened billing UX and clearer usage breakdowns
+* Rate limiting and abuse protection
+* Optional wallet-based auth (beyond demo mode)
 
-- LM Studio running locally with the server enabled
-- Petra Wallet (or any Aptos-compatible wallet)
-- Aptos testnet USDC for receiving payments
+The goal is to keep the system simple while making it reliable and extensible.
 
-### Steps
+---
 
-1. **Start LM Studio**
-   - Run a model in LM Studio.
-   - Enable the local server endpoint.
-   - Confirm the endpoint works locally.
+## Requirements
 
-2. **Open the Host page**
-   - Visit `/host` in the app.
-   - Connect your **Petra wallet**.
-   - The app reads your wallet address as the **payment receiver**.
+* Node.js 18+
+* LM Studio installed locally
+* At least one LM Studio-compatible model downloaded
 
-3. **Set pricing**
-   - Choose a rate in **USDC per 1,000 output tokens** (recommended).
-   - Pricing is computed per request using `max_tokens`.
+---
 
-4. **Generate your share link**
-   - The app creates a room URL that includes pricing and receiver address.
-   - Share the URL with guests.
+## Running the system locally
 
-### Share URL format
-
-Example:
+Clone the repository:
 
 ```
-https://<your-domain>/r/<roomId>?recv=<aptos_address>&usdc_per_1k=<rate>
+git clone https://github.com/raldblox/local-llm-x402.git
+cd local-llm-x402
 ```
 
-Notes:
+Install dependencies:
 
-- `roomId` identifies the shared AI room.
-- `recv` is the host payment address.
-- `usdc_per_1k` is the displayed rate and the server-side pricing input.
+```
+npm install
+```
 
----
+Start the development environment:
 
-## Guest instructions
+```
+npm run dev
+```
 
-1. **Open the room link**
-   - The page checks if the room is online.
-   - If the host is offline, you will see "Host offline" with auto-retry.
+This starts:
 
-2. **Connect your Petra wallet**
-   - This becomes your identity in the room.
+* The Next.js app
+* A local LM Studio proxy at `http://127.0.0.1:4312`
 
-3. **Approve x402 payment when prompted**
-   - Your first paid message triggers an HTTP 402 challenge.
-   - Approve the USDC payment request in Petra.
+Open in your browser:
 
-4. **Chat**
-   - Messages appear in a shared room feed.
-   - The host gateway executes paid prompts against the local model and posts results back into the room.
+```
+http://localhost:3000/demo/host
+```
 
-Per message you will see:
-
-- prompt
-- paid amount
-- transaction reference
-- model response
-- token usage
+Make sure LM Studio is running and its local server is enabled.
 
 ---
 
-## Shared AI room behavior
+## Using with Vercel deployments
 
-This is intentionally simple for reliability:
+When deployed on Vercel, the local proxy must still run on the host’s machine.
 
-- A room exists when the host shares a link.
-- Guests post prompts into the room.
-- The gateway watches the room feed for new prompts.
-- For each prompt:
-  - enforce x402 payment
-  - run inference locally via LM Studio
-  - append the response to the room feed
+Why:
 
-Identity is wallet-based:
+* Vercel cannot access `localhost:1234`
+* The browser can, through the local proxy
 
-- Host identity is the receiver wallet.
-- Guest identity is the connected wallet.
+Typical flow:
 
----
+1. Run `npm run dev` locally (starts proxy)
+2. Open the deployed Vercel URL in the same browser
+3. Model detection and chat work through `127.0.0.1:4312`
 
-## What works today
-
-- Token-metered inference pricing
-- Local LLMs via **LM Studio and compatible runtimes**
-- Aptos testnet support
-- Gas-sponsored payments via x402 facilitator
-- Minimal UI for host and guest suitable for production hardening
+This design keeps local compute private and controlled by the host.
 
 ---
 
-## Status
+## Environment variables
 
-This project is intentionally minimal and production-oriented. It focuses on correctness, clarity, and alignment with how AI providers already price inference, while showcasing how Aptos x402 enables a cleaner, protocol-level alternative to API key billing.
+```
+NEXT_PUBLIC_DEMO_HOST_PRIVATE_KEY=
+NEXT_PUBLIC_DEMO_GUEST_PRIVATE_KEY=
+NEXT_PUBLIC_DEMO_HOST_ADDRESS=
+NEXT_PUBLIC_DEMO_GUEST_ADDRESS=
+
+PAYMENT_RECIPIENT_ADDRESS=
+FACILITATOR_URL=https://x402-navy.vercel.app/facilitator/
+
+LM_STUDIO_PROXY_BASE_URL=http://127.0.0.1:4312
+LM_STUDIO_DEFAULT_TARGET_URL=http://127.0.0.1:1234
+```
+
+---
+
+## License
+
+MIT
 
 ---
 
 ## TL;DR
 
-Run a model locally. Expose it to the internet. Charge per generation. Enforce payment with HTTP 402.
-
-That's it.
+Run AI locally. Expose it through a shared room. Charge by usage. Enforce payment with HTTP 402.
