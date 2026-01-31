@@ -548,7 +548,7 @@ export default function ChatContainer({ mode, role }: { mode: LandingMode; role?
         : 'No model connected';
 
   return (
-    <div className="flex min-h-screen flex-col relative text-foreground">
+    <div className="flex min-h-screen px-3 flex-col relative text-foreground">
       <header className="border-b bg-background sticky z-50! top-0 border-border/60">
         <div className="mx-auto flex h-14 w-full max-w-5xl items-center justify-between">
           <div className="flex items-center gap-2">
