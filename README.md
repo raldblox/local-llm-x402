@@ -16,6 +16,12 @@ This repository demonstrates the full end-to-end flow, from local inference to o
 
 ---
 
+## Quick demo video
+
+[![local-llm-x402 demo video](https://img.youtube.com/vi/MJNTw7EAIfk/maxresdefault.jpg)](https://youtu.be/MJNTw7EAIfk)
+
+---
+
 ## What exists today
 
 This project is intentionally focused on proving the core primitives required for public use.
